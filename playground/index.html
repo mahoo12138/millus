@@ -1,0 +1,743 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>millus — AI 技术插画运行时 Playground</title>
+  <style>
+    :root,
+    html[data-theme="light"] {
+      --blog-bg: #ffffff;
+      --blog-card-bg: #f8fafc;
+      --blog-fg: #0f172a;
+      --blog-fg-muted: #64748b;
+      --blog-border: #cbd5e1;
+      --blog-primary: #2563eb;
+      --blog-secondary: #7c3aed;
+      --blog-accent: #0891b2;
+      --blog-success: #059669;
+      --blog-warning: #d97706;
+      --blog-danger: #dc2626;
+      --page-bg: #f1f5f9;
+      --panel-bg: #ffffff;
+    }
+
+    html[data-theme="dark"] {
+      --blog-bg: #0b0f19;
+      --blog-card-bg: #131b2e;
+      --blog-fg: #f1f5f9;
+      --blog-fg-muted: #94a3b8;
+      --blog-border: #26334d;
+      --blog-primary: #60a5fa;
+      --blog-secondary: #a78bfa;
+      --blog-accent: #22d3ee;
+      --blog-success: #34d399;
+      --blog-warning: #fbbf24;
+      --blog-danger: #f87171;
+      --page-bg: #060911;
+      --panel-bg: #0f1626;
+    }
+
+    html[data-theme="cyberpunk"] {
+      --blog-bg: #090414;
+      --blog-card-bg: #150a2a;
+      --blog-fg: #fdf4ff;
+      --blog-fg-muted: #c084fc;
+      --blog-border: #4c1d95;
+      --blog-primary: #f43f5e;
+      --blog-secondary: #d946ef;
+      --blog-accent: #00f5d4;
+      --blog-success: #00f5d4;
+      --blog-warning: #facc15;
+      --blog-danger: #fb7185;
+      --page-bg: #05020a;
+      --panel-bg: #110722;
+    }
+
+    html[data-theme="warm"] {
+      --blog-bg: #fdfaf3;
+      --blog-card-bg: #f5efe2;
+      --blog-fg: #292524;
+      --blog-fg-muted: #78716c;
+      --blog-border: #d6cfc2;
+      --blog-primary: #c2410c;
+      --blog-secondary: #7e22ce;
+      --blog-accent: #0f766e;
+      --blog-success: #15803d;
+      --blog-warning: #b45309;
+      --blog-danger: #b91c1c;
+      --page-bg: #f3ede0;
+      --panel-bg: #faf6ed;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--page-bg);
+      color: var(--blog-fg);
+      font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      transition: background-color 0.2s ease, color 0.2s ease;
+    }
+
+    header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 14px 24px;
+      background: var(--panel-bg);
+      border-bottom: 1px solid var(--blog-border);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .brand-title {
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+    }
+
+    .brand-badge {
+      font-size: 11px;
+      font-family: ui-monospace, monospace;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: rgba(59, 130, 246, 0.15);
+      color: var(--blog-primary);
+      border: 1px solid var(--blog-primary);
+    }
+
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .control-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--blog-fg-muted);
+    }
+
+    select, button.ctrl-btn {
+      appearance: none;
+      background: var(--blog-bg);
+      color: var(--blog-fg);
+      border: 1px solid var(--blog-border);
+      padding: 6px 11px;
+      border-radius: 7px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: border-color 0.15s ease;
+    }
+
+    select:hover, button.ctrl-btn:hover {
+      border-color: var(--blog-primary);
+    }
+
+    .workspace {
+      display: grid;
+      grid-template-columns: 380px 1fr;
+      min-height: calc(100vh - 58px);
+    }
+
+    @media (max-width: 960px) {
+      .workspace {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .editor-pane {
+      display: flex;
+      flex-direction: column;
+      background: var(--panel-bg);
+      border-right: 1px solid var(--blog-border);
+      padding: 16px;
+      gap: 10px;
+    }
+
+    .pane-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--blog-fg-muted);
+    }
+
+    textarea#spec-editor {
+      flex: 1;
+      min-height: 460px;
+      width: 100%;
+      resize: vertical;
+      background: var(--blog-bg);
+      color: var(--blog-fg);
+      border: 1px solid var(--blog-border);
+      border-radius: 8px;
+      padding: 12px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.5;
+      outline: none;
+    }
+
+    textarea#spec-editor:focus {
+      border-color: var(--blog-primary);
+    }
+
+    .preview-pane {
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      overflow-y: auto;
+    }
+
+    .blog-article-container {
+      width: 100%;
+      max-width: 980px;
+      background: var(--blog-bg);
+      border: 1px solid var(--blog-border);
+      border-radius: 14px;
+      padding: 28px 32px;
+      box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.25);
+      transition: max-width 0.3s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.2s ease;
+    }
+
+    .blog-article-container.is-mobile-sim {
+      max-width: 460px;
+    }
+
+    .article-title {
+      margin: 0 0 8px 0;
+      font-size: 20px;
+      font-weight: 700;
+    }
+
+    .article-desc {
+      margin: 0 0 18px 0;
+      font-size: 13.5px;
+      color: var(--blog-fg-muted);
+      line-height: 1.6;
+    }
+
+    .feature-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 16px;
+      padding-top: 14px;
+      border-top: 1px dashed var(--blog-border);
+      font-size: 12px;
+      color: var(--blog-fg-muted);
+    }
+
+    .pill {
+      padding: 3px 9px;
+      border-radius: 6px;
+      background: var(--blog-card-bg);
+      border: 1px solid var(--blog-border);
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="brand-title">millus Runtime Playground</span>
+      <span class="brand-badge">&lt;ai-illustration&gt; Web Component</span>
+    </div>
+
+    <div class="controls">
+      <div class="control-group">
+        <label for="example-select">示例模板:</label>
+        <select id="example-select">
+          <option value="pipeline">1. MDX 构建期与运行时管线 (代码行 + 单元格锚定)</option>
+          <option value="memory">2. 零拷贝内存布局与内核态调用 (Table + Terminal)</option>
+          <option value="canvas">3. 自由几何 Canvas 与分布式网关拓扑</option>
+        </select>
+      </div>
+
+      <div class="control-group">
+        <label for="theme-select">宿主博客主题 (CSS Variables):</label>
+        <select id="theme-select">
+          <option value="dark">Astro Starlight Dark (深色)</option>
+          <option value="light">VitePress Clean Light (浅色)</option>
+          <option value="cyberpunk">Cyberpunk Neon (赛博霓虹)</option>
+          <option value="warm">Warm Paper (暖色羊皮纸)</option>
+        </select>
+      </div>
+
+      <div class="control-group">
+        <label for="preset-select">渲染风格:</label>
+        <select id="preset-select">
+          <option value="clean">◇ Clean (现代矢量)</option>
+          <option value="sketch">✎ Sketch (Rough 手绘风)</option>
+        </select>
+      </div>
+
+      <button class="ctrl-btn" id="viewport-btn" title="模拟手机端窄屏容器，触发 ResizeObserver 自动纵向重排">
+        📱 模拟移动端窄屏重排
+      </button>
+
+      <button class="ctrl-btn" id="copy-prompt-btn" title="复制给 Claude / GPT / Gemini 的 System Prompt">
+        📋 复制 AI System Prompt
+      </button>
+    </div>
+  </header>
+
+  <div class="workspace">
+    <aside class="editor-pane">
+      <div class="pane-header">
+        <span>AI Illustration JSON Spec (实时编辑)</span>
+        <span id="compile-status" style="color: var(--blog-success);">● 实时同步</span>
+      </div>
+      <textarea id="spec-editor" spellcheck="false"></textarea>
+    </aside>
+
+    <main class="preview-pane">
+      <article class="blog-article-container" id="article-box">
+        <h2 class="article-title">技术博客正文预览区</h2>
+        <p class="article-desc">
+          下方是标准 <code>&lt;ai-illustration&gt;</code> Web Component。尝试<strong>将鼠标悬停在代码块高亮行、表格单元格或卡片上</strong>体验焦点联动高亮，或切换上方<strong>宿主博客主题</strong>观察零延迟重绘。
+        </p>
+
+        <ai-illustration id="demo-ill" responsive="reflow"></ai-illustration>
+
+        <div class="feature-pills">
+          <span class="pill">✨ 鼠标移入插画右上角可打开悬浮工具栏</span>
+          <span class="pill">🎯 支持 <code>mdx_source.line_2@right</code> 代码行级锚点</span>
+          <span class="pill">🎨 MutationObserver 实时嗅探宿主 CSS 变量</span>
+          <span class="pill">📐 ResizeObserver 窄屏自动转纵排布局</span>
+        </div>
+      </article>
+    </main>
+  </div>
+
+  <script type="module">
+    import "../dist/millus.bundle.js";
+    import { AI_ILLUSTRATION_SYSTEM_PROMPT } from "../dist/millus.bundle.js";
+
+    const EXAMPLES = {
+      pipeline: {
+        title: "构建期与运行时协同 AI 插画管线",
+        canvas: {
+          background: "dots",
+          padding: 32
+        },
+        elements: [
+          {
+            id: "mdx_source",
+            type: "code-block",
+            title: "post.mdx",
+            lang: "yaml",
+            code: "# 架构解析\n```illustration\nelements:\n  - id: api_gw\n    type: card\n```",
+            highlightLines: [2, 3, 4, 5],
+            style: {
+              tone: "primary",
+              elevation: "sm"
+            }
+          },
+          {
+            id: "runtime_group",
+            type: "group",
+            title: "<ai-illustration> 浏览器运行时",
+            place: {
+              rightOf: "mdx_source",
+              gap: 54,
+              align: "center"
+            },
+            layout: {
+              type: "flex",
+              direction: "column",
+              gap: 16
+            },
+            style: {
+              tone: "primary",
+              variant: "dashed"
+            },
+            children: [
+              {
+                id: "theme_observer",
+                type: "card",
+                icon: "sparkles",
+                title: "1. ThemeObserver 主题嗅探",
+                badge: "Reactive",
+                body: "监听 html.dark 与宿主 CSS 变量变化",
+                style: {
+                  tone: "info",
+                  variant: "soft"
+                }
+              },
+              {
+                id: "layout_engine",
+                type: "card",
+                icon: "layers",
+                title: "2. 混合布局与正交寻路",
+                body: "Canvas 真实字体测量 → 拓扑求解",
+                style: {
+                  tone: "primary",
+                  variant: "soft"
+                }
+              }
+            ]
+          },
+          {
+            id: "token_table",
+            type: "table",
+            title: "运行时主题 Token 映射表",
+            place: {
+              rightOf: "runtime_group",
+              gap: 54,
+              align: "start"
+            },
+            headers: ["语义 Token", "宿主变量绑定"],
+            rows: [
+              ["primary", { text: "var(--blog-primary)", tone: "primary" }],
+              ["surface", { text: "var(--blog-card-bg)", tone: "success" }]
+            ],
+            style: {
+              tone: "success",
+              variant: "outlined"
+            }
+          },
+          {
+            id: "svg_dom",
+            type: "card",
+            icon: "cpu",
+            title: "响应式 SVG DOM",
+            badge: "60fps",
+            body: "支持代码行联动高亮、流光粒子与 2x PNG 导出",
+            place: {
+              below: "token_table",
+              gap: 28,
+              align: "start"
+            },
+            style: {
+              tone: "success",
+              variant: "filled",
+              elevation: "md"
+            }
+          },
+          {
+            id: "note_1",
+            type: "callout",
+            text: "按行号 mdx_source.line_2 直接引出箭头，无需手算坐标！",
+            target: "mdx_source.line_2",
+            side: "top",
+            style: {
+              tone: "warning"
+            }
+          }
+        ],
+        connections: [
+          {
+            id: "e1",
+            from: "mdx_source.line_2@right",
+            to: "theme_observer@left",
+            label: "JSON Spec",
+            routing: "curved",
+            tone: "primary",
+            animation: { type: "pulse", speed: "normal" }
+          },
+          {
+            id: "e2",
+            from: "theme_observer@right",
+            to: "token_table.cell_0_1@left",
+            label: "getComputedStyle",
+            routing: "orthogonal",
+            strokeStyle: "dashed",
+            tone: "info",
+            animation: { type: "flow" }
+          },
+          {
+            id: "e3",
+            from: "theme_observer@bottom",
+            to: "layout_engine@top",
+            label: "重算色彩与度量",
+            tone: "primary"
+          },
+          {
+            id: "e4",
+            from: "layout_engine@right",
+            to: "svg_dom@left",
+            label: "渲染 SceneGraph",
+            routing: "orthogonal",
+            tone: "success",
+            animation: { type: "pulse", speed: "fast" }
+          }
+        ]
+      },
+
+      memory: {
+        title: "Linux sendfile 零拷贝内存与 DMA 传输图解",
+        canvas: {
+          background: "grid",
+          padding: 32
+        },
+        elements: [
+          {
+            id: "cli_term",
+            type: "terminal",
+            title: "user-space-shell",
+            lines: [
+              { prompt: "$", cmd: "strace -e sendfile ./http-server" },
+              { output: "sendfile(fd_out=4, fd_in=3, NULL, 65536) = 65536", tone: "success" },
+              { output: "0 CPU copy between user & kernel buffers!", tone: "accent" }
+            ]
+          },
+          {
+            id: "kernel_buf",
+            type: "table",
+            title: "Kernel Page Cache (环形描述符)",
+            place: {
+              rightOf: "cli_term",
+              gap: 52,
+              align: "center"
+            },
+            headers: ["Offset", "Page Frame", "DMA Flag"],
+            rows: [
+              ["0x0000", { text: "skb_frag_t[0]", tone: "primary" }, "DMA_MAPPED"],
+              ["0x4000", { text: "skb_frag_t[1]", tone: "accent" }, "ZERO_COPY"]
+            ],
+            style: {
+              tone: "primary",
+              variant: "outlined"
+            }
+          },
+          {
+            id: "nic_card",
+            type: "card",
+            icon: "server",
+            title: "NIC TX Ring Buffer",
+            badge: "Hardware DMA",
+            body: "网卡 DMA 引擎直接按物理页描述符读取发送",
+            place: {
+              below: "kernel_buf",
+              gap: 36,
+              align: "center"
+            },
+            style: {
+              tone: "accent",
+              variant: "soft",
+              elevation: "md"
+            }
+          }
+        ],
+        connections: [
+          {
+            from: "cli_term.line_2@right",
+            to: "kernel_buf.cell_0_1@left",
+            label: "系统调用陷入内核",
+            routing: "curved",
+            tone: "primary",
+            animation: { type: "pulse" }
+          },
+          {
+            from: "kernel_buf.cell_1_1@bottom",
+            to: "nic_card@top",
+            label: "SG-DMA 散列聚合直传",
+            routing: "orthogonal",
+            tone: "accent",
+            animation: { type: "bidirectional", speed: "fast" }
+          }
+        ]
+      },
+
+      canvas: {
+        title: "自由几何图形与分布式鉴权网关",
+        canvas: {
+          background: "dots",
+          padding: 36
+        },
+        elements: [
+          {
+            id: "client_node",
+            type: "circle",
+            label: "Client",
+            sublabel: "HTTPS",
+            style: {
+              tone: "info",
+              variant: "soft",
+              elevation: "sm"
+            }
+          },
+          {
+            id: "waf_check",
+            type: "diamond",
+            label: "JWT 校验",
+            place: {
+              rightOf: "client_node",
+              gap: 48,
+              align: "center"
+            },
+            style: {
+              tone: "warning",
+              variant: "soft"
+            }
+          },
+          {
+            id: "mesh_cluster",
+            type: "window",
+            title: "Service Mesh Pod",
+            url: "mesh://internal.prod:8443",
+            place: {
+              rightOf: "waf_check",
+              gap: 56,
+              align: "center"
+            },
+            layout: {
+              type: "flex",
+              direction: "row",
+              gap: 18
+            },
+            style: {
+              tone: "primary",
+              variant: "outlined"
+            },
+            children: [
+              {
+                id: "envoy_proxy",
+                type: "polygon",
+                sides: 6,
+                label: "Envoy",
+                style: {
+                  tone: "secondary",
+                  variant: "soft"
+                }
+              },
+              {
+                id: "core_api",
+                type: "card",
+                icon: "zap",
+                title: "Order Core",
+                badge: "gRPC",
+                body: "高并发撮合服务",
+                style: {
+                  tone: "success",
+                  variant: "soft"
+                }
+              }
+            ]
+          },
+          {
+            id: "reject_badge",
+            type: "badge",
+            text: "401 Unauthorized",
+            place: {
+              below: "waf_check",
+              gap: 36,
+              align: "center"
+            },
+            style: {
+              tone: "danger",
+              variant: "filled"
+            }
+          }
+        ],
+        connections: [
+          {
+            from: "client_node@right",
+            to: "waf_check@left",
+            label: "Bearer Token",
+            tone: "info",
+            animation: { type: "pulse" }
+          },
+          {
+            from: "waf_check@right",
+            to: "envoy_proxy@left",
+            label: "通过",
+            tone: "success",
+            animation: { type: "pulse", speed: "fast" }
+          },
+          {
+            from: "envoy_proxy@right",
+            to: "core_api@left",
+            routing: "straight",
+            tone: "secondary",
+            animation: { type: "flow" }
+          },
+          {
+            from: "waf_check@bottom",
+            to: "reject_badge@top",
+            label: "签名失效",
+            strokeStyle: "dashed",
+            tone: "danger"
+          }
+        ]
+      }
+    };
+
+    const illEl = document.getElementById("demo-ill");
+    const editorEl = document.getElementById("spec-editor");
+    const statusEl = document.getElementById("compile-status");
+    const exampleSelect = document.getElementById("example-select");
+    const themeSelect = document.getElementById("theme-select");
+    const presetSelect = document.getElementById("preset-select");
+    const viewportBtn = document.getElementById("viewport-btn");
+    const copyPromptBtn = document.getElementById("copy-prompt-btn");
+    const articleBox = document.getElementById("article-box");
+
+    function loadExample(key) {
+      const spec = EXAMPLES[key];
+      editorEl.value = JSON.stringify(spec, null, 2);
+      illEl.spec = spec;
+      statusEl.textContent = "● 实时同步";
+      statusEl.style.color = "var(--blog-success)";
+    }
+
+    editorEl.addEventListener("input", () => {
+      try {
+        const parsed = JSON.parse(editorEl.value);
+        illEl.spec = parsed;
+        statusEl.textContent = "● 编译通过";
+        statusEl.style.color = "var(--blog-success)";
+      } catch (e) {
+        statusEl.textContent = "⚠ JSON 语法错误";
+        statusEl.style.color = "var(--blog-danger)";
+      }
+    });
+
+    exampleSelect.addEventListener("change", (e) => {
+      loadExample(e.target.value);
+    });
+
+    themeSelect.addEventListener("change", (e) => {
+      document.documentElement.setAttribute("data-theme", e.target.value);
+    });
+
+    presetSelect.addEventListener("change", (e) => {
+      illEl.setAttribute("preset", e.target.value);
+    });
+
+    viewportBtn.addEventListener("click", () => {
+      const isMobile = articleBox.classList.toggle("is-mobile-sim");
+      viewportBtn.textContent = isMobile
+        ? "🖥 恢复桌面端宽屏"
+        : "📱 模拟移动端窄屏重排";
+    });
+
+    copyPromptBtn.addEventListener("click", async () => {
+      await navigator.clipboard.writeText(AI_ILLUSTRATION_SYSTEM_PROMPT);
+      const orig = copyPromptBtn.textContent;
+      copyPromptBtn.textContent = "✓ 已复制 System Prompt";
+      setTimeout(() => {
+        copyPromptBtn.textContent = orig;
+      }, 1500);
+    });
+
+    loadExample("pipeline");
+  </script>
+</body>
+</html>

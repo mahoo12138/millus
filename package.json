@@ -1,0 +1,28 @@
+{
+  "name": "millus",
+  "version": "0.1.0",
+  "description": "millus — AI-driven, theme-reactive technical illustration framework and Web Component runtime for Markdown/MDX blogs",
+  "type": "module",
+  "main": "./dist/millus.bundle.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/millus.bundle.js",
+    "./remark": "./dist/integrations/remark-plugin.js",
+    "./prompt": "./dist/schema/ai-prompt.js"
+  },
+  "scripts": {
+    "build": "node --experimental-strip-types scripts/build-bundle.ts",
+    "test": "node --experimental-strip-types test/compiler.test.ts"
+  },
+  "keywords": [
+    "ai",
+    "illustration",
+    "svg",
+    "mdx",
+    "remark",
+    "web-component",
+    "diagram",
+    "scene-graph"
+  ],
+  "license": "MIT"
+}
