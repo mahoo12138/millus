@@ -1,16 +1,75 @@
 /**
  * Unified Compiler Entry Point: IllustrationSpec + Theme -> Normalized SceneGraph
+ * Includes Dynamic ViewBox Envelope Expansion so detour edges, self-loops, and outer labels
+ * are never clipped by the SVG canvas boundary.
  */
 
 import type {
+  BoundingBox,
   IllustrationSpec,
   ResolvedThemeTokens,
+  SceneEdge,
   SceneGraph,
+  SceneNode,
 } from "../schema/spec.ts";
 import { TextMeasurer } from "../runtime/text-measurer.ts";
 import { HybridLayoutSolver, type LayoutOptions } from "./layout-solver.ts";
 import { routeConnections } from "./edge-router.ts";
 import { buildFocusAdjacency } from "./adjacency-builder.ts";
+
+function translateNodeTree(
+  nodes: SceneNode[],
+  dx: number,
+  dy: number
+): void {
+  for (const n of nodes) {
+    n.x += dx;
+    n.y += dy;
+    if (n.children.length > 0) {
+      translateNodeTree(n.children, dx, dy);
+    }
+  }
+}
+
+function translateAnchorRegistry(
+  registry: Record<string, BoundingBox>,
+  dx: number,
+  dy: number
+): void {
+  for (const box of Object.values(registry)) {
+    box.x += dx;
+    box.y += dy;
+  }
+}
+
+function measureEdgesEnvelope(edges: SceneEdge[]): {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+} {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+
+  for (const edge of edges) {
+    for (const pt of edge.points) {
+      minX = Math.min(minX, pt[0]);
+      minY = Math.min(minY, pt[1]);
+      maxX = Math.max(maxX, pt[0]);
+      maxY = Math.max(maxY, pt[1]);
+    }
+    if (edge.labelBox) {
+      minX = Math.min(minX, edge.labelBox.x);
+      minY = Math.min(minY, edge.labelBox.y);
+      maxX = Math.max(maxX, edge.labelBox.x + edge.labelBox.width);
+      maxY = Math.max(maxY, edge.labelBox.y + edge.labelBox.height);
+    }
+  }
+
+  return { minX, minY, maxX, maxY };
+}
 
 export function compileIllustration(
   spec: IllustrationSpec,
@@ -18,24 +77,64 @@ export function compileIllustration(
   options: LayoutOptions = {},
   measurer = new TextMeasurer()
 ): SceneGraph {
+  const compact = options.compactViewport ?? false;
   const layoutSolver = new HybridLayoutSolver(measurer, theme);
   const layoutResult = layoutSolver.solve(spec, options);
 
-  const edges = routeConnections(
+  let edges = routeConnections(
     spec.connections,
     layoutResult.anchorRegistry,
     theme,
     measurer,
-    options.compactViewport ?? false
+    compact
   );
+
+  let finalWidth = layoutResult.width;
+  let finalHeight = layoutResult.height;
+
+  if (edges.length > 0) {
+    const minMargin = 20;
+    let env = measureEdgesEnvelope(edges);
+
+    const shiftX =
+      Number.isFinite(env.minX) && env.minX < minMargin
+        ? Math.ceil(minMargin - env.minX)
+        : 0;
+    const shiftY =
+      Number.isFinite(env.minY) && env.minY < minMargin
+        ? Math.ceil(minMargin - env.minY)
+        : 0;
+
+    if (shiftX > 0 || shiftY > 0) {
+      translateNodeTree(layoutResult.nodes, shiftX, shiftY);
+      translateAnchorRegistry(layoutResult.anchorRegistry, shiftX, shiftY);
+      finalWidth += shiftX;
+      finalHeight += shiftY;
+      edges = routeConnections(
+        spec.connections,
+        layoutResult.anchorRegistry,
+        theme,
+        measurer,
+        compact
+      );
+      env = measureEdgesEnvelope(edges);
+    }
+
+    if (typeof spec.canvas?.width !== "number" && Number.isFinite(env.maxX)) {
+      finalWidth = Math.max(finalWidth, Math.ceil(env.maxX + minMargin));
+    }
+    if (typeof spec.canvas?.height !== "number" && Number.isFinite(env.maxY)) {
+      finalHeight = Math.max(finalHeight, Math.ceil(env.maxY + minMargin));
+    }
+  }
 
   const adjacency = buildFocusAdjacency(layoutResult.nodes, edges);
 
   return {
     title: spec.title,
-    width: layoutResult.width,
-    height: layoutResult.height,
-    viewBox: [0, 0, layoutResult.width, layoutResult.height],
+    width: finalWidth,
+    height: finalHeight,
+    viewBox: [0, 0, finalWidth, finalHeight],
     background: spec.canvas?.background || "dots",
     preset: theme.geometry.preset,
     theme,

@@ -1931,38 +1931,137 @@ export class HybridLayoutSolver {
       if (!order.includes(n.id)) order.push(n.id);
     }
 
+    // Pre-compute normalized PlaceSpec and symmetric fan-out offsets for nodes sharing (refId, direction)
+    const effPlaceById = new Map<string, PlaceSpec>();
+    const fanGroups = new Map<string, string[]>();
+
+    for (const id of order) {
+      const spec = specById.get(id)!;
+      if (spec.x !== undefined || spec.y !== undefined || !spec.place) continue;
+      const rawPlace = spec.place;
+      const eff: PlaceSpec = compact
+        ? {
+            ...rawPlace,
+            rightOf: undefined,
+            leftOf: undefined,
+            below: rawPlace.below || rawPlace.rightOf,
+            above: rawPlace.above || rawPlace.leftOf,
+            gap: rawPlace.gap ? Math.min(rawPlace.gap, 36) : 28,
+          }
+        : rawPlace;
+      effPlaceById.set(id, eff);
+
+      if (!eff.offset) {
+        const dirKey = eff.rightOf
+          ? `rightOf::${eff.rightOf}`
+          : eff.leftOf
+          ? `leftOf::${eff.leftOf}`
+          : eff.below
+          ? `below::${eff.below}`
+          : eff.above
+          ? `above::${eff.above}`
+          : undefined;
+        if (dirKey) {
+          const list = fanGroups.get(dirKey) || [];
+          list.push(id);
+          fanGroups.set(dirKey, list);
+        }
+      }
+    }
+
+    const fanOffsetById = new Map<string, { axis: "x" | "y"; offsetFromRefCenter: number }>();
+    fanGroups.forEach((groupIds, dirKey) => {
+      if (groupIds.length <= 1) return;
+      const isHorizDir =
+        dirKey.startsWith("rightOf::") || dirKey.startsWith("leftOf::");
+
+      if (isHorizDir) {
+        // Stack fan-out siblings vertically and center around ref's vertical midpoint
+        let totalH = 0;
+        const stepGaps: number[] = [];
+        for (let i = 0; i < groupIds.length; i++) {
+          const n = nodeById.get(groupIds[i])!;
+          totalH += n.height;
+          if (i < groupIds.length - 1) {
+            const nextId = groupIds[i + 1];
+            const g = Math.max(
+              24,
+              gapResolver.getRequiredGap([n.id], [nextId], "vertical")
+            );
+            stepGaps.push(g);
+            totalH += g;
+          }
+        }
+        let cursor = -totalH / 2;
+        for (let i = 0; i < groupIds.length; i++) {
+          const n = nodeById.get(groupIds[i])!;
+          fanOffsetById.set(n.id, {
+            axis: "y",
+            offsetFromRefCenter: cursor + n.height / 2,
+          });
+          cursor += n.height + (stepGaps[i] || 0);
+        }
+      } else if (!compact) {
+        // Spread below/above fan-out siblings horizontally and center around ref's horizontal midpoint
+        let totalW = 0;
+        const stepGaps: number[] = [];
+        for (let i = 0; i < groupIds.length; i++) {
+          const n = nodeById.get(groupIds[i])!;
+          totalW += n.width;
+          if (i < groupIds.length - 1) {
+            const nextId = groupIds[i + 1];
+            const g = Math.max(
+              28,
+              gapResolver.getRequiredGap([n.id], [nextId], "horizontal")
+            );
+            stepGaps.push(g);
+            totalW += g;
+          }
+        }
+        let cursor = -totalW / 2;
+        for (let i = 0; i < groupIds.length; i++) {
+          const n = nodeById.get(groupIds[i])!;
+          fanOffsetById.set(n.id, {
+            axis: "x",
+            offsetFromRefCenter: cursor + n.width / 2,
+          });
+          cursor += n.width + (stepGaps[i] || 0);
+        }
+      }
+    });
+
     let autoFlowCursorX = 0;
     let autoFlowCursorY = 0;
     let prevAutoFlowId: string | undefined;
     const defaultFlowRow =
       !compact && (layout.direction === "row" || layout.type === "free");
+    const placedNodes: SceneNode[] = [];
+
+    const nodesOverlap = (a: SceneNode, b: SceneNode, pad = 20): boolean =>
+      a.x - pad < b.x + b.width &&
+      a.x + a.width + pad > b.x &&
+      a.y - pad < b.y + b.height &&
+      a.y + a.height + pad > b.y;
 
     for (const id of order) {
       const node = nodeById.get(id)!;
       const spec = specById.get(id)!;
-      const rawPlace = spec.place;
+      const place = effPlaceById.get(id);
 
       if (spec.x !== undefined || spec.y !== undefined) {
         node.x = spec.x ?? 0;
         node.y = spec.y ?? 0;
-      } else if (rawPlace) {
-        // Transform horizontal relations into vertical when compactViewport is enabled
-        const place: PlaceSpec = compact
-          ? {
-              ...rawPlace,
-              rightOf: undefined,
-              leftOf: undefined,
-              below: rawPlace.below || rawPlace.rightOf,
-              above: rawPlace.above || rawPlace.leftOf,
-              gap: rawPlace.gap ? Math.min(rawPlace.gap, 36) : 28,
-            }
-          : rawPlace;
+        placedNodes.push(node);
+        continue;
+      }
 
+      if (place) {
         const refId = getRefId(place);
         const ref = refId ? nodeById.get(refId) : undefined;
         const baseGap = place.gap ?? 44;
         const align = place.align || "center";
         const [ox, oy] = place.offset || [0, 0];
+        const fanOffset = fanOffsetById.get(id);
 
         if (ref) {
           const isHorizPlace = Boolean(place.rightOf || place.leftOf);
@@ -1979,38 +2078,52 @@ export class HybridLayoutSolver {
           );
           const gap = Math.max(baseGap, connReqGap);
 
+          const computeAlignedY = (): number => {
+            if (fanOffset && fanOffset.axis === "y") {
+              return (
+                ref.y +
+                ref.height / 2 +
+                fanOffset.offsetFromRefCenter -
+                node.height / 2 +
+                oy
+              );
+            }
+            return align === "start"
+              ? ref.y + oy
+              : align === "end"
+              ? ref.y + ref.height - node.height + oy
+              : ref.y + (ref.height - node.height) / 2 + oy;
+          };
+
+          const computeAlignedX = (): number => {
+            if (fanOffset && fanOffset.axis === "x") {
+              return (
+                ref.x +
+                ref.width / 2 +
+                fanOffset.offsetFromRefCenter -
+                node.width / 2 +
+                ox
+              );
+            }
+            return align === "start"
+              ? ref.x + ox
+              : align === "end"
+              ? ref.x + ref.width - node.width + ox
+              : ref.x + (ref.width - node.width) / 2 + ox;
+          };
+
           if (place.rightOf) {
             node.x = ref.x + ref.width + gap + ox;
-            node.y =
-              align === "start"
-                ? ref.y + oy
-                : align === "end"
-                ? ref.y + ref.height - node.height + oy
-                : ref.y + (ref.height - node.height) / 2 + oy;
+            node.y = computeAlignedY();
           } else if (place.leftOf) {
             node.x = ref.x - node.width - gap + ox;
-            node.y =
-              align === "start"
-                ? ref.y + oy
-                : align === "end"
-                ? ref.y + ref.height - node.height + oy
-                : ref.y + (ref.height - node.height) / 2 + oy;
+            node.y = computeAlignedY();
           } else if (place.below) {
             node.y = ref.y + ref.height + gap + oy;
-            node.x =
-              align === "start"
-                ? ref.x + ox
-                : align === "end"
-                ? ref.x + ref.width - node.width + ox
-                : ref.x + (ref.width - node.width) / 2 + ox;
+            node.x = computeAlignedX();
           } else if (place.above) {
             node.y = ref.y - node.height - gap + oy;
-            node.x =
-              align === "start"
-                ? ref.x + ox
-                : align === "end"
-                ? ref.x + ref.width - node.width + ox
-                : ref.x + (ref.width - node.width) / 2 + ox;
+            node.x = computeAlignedX();
           }
         }
       } else {
@@ -2044,6 +2157,23 @@ export class HybridLayoutSolver {
           autoFlowCursorY += node.height + (layout.gap ?? 24);
         }
       }
+
+      // AABB collision guard: nudge node if it overlaps any already-placed sibling
+      let guardIter = 0;
+      while (guardIter < 16) {
+        const hit = placedNodes.find((p) => nodesOverlap(node, p, 20));
+        if (!hit) break;
+        if (place?.above) {
+          node.y = hit.y - node.height - 24;
+        } else if (place?.leftOf) {
+          node.x = hit.x - node.width - 28;
+        } else {
+          node.y = hit.y + hit.height + 24;
+        }
+        guardIter++;
+      }
+
+      placedNodes.push(node);
     }
 
     let minX = Infinity;

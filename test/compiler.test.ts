@@ -347,4 +347,130 @@ assert.ok(
   "Syscall edge label must sit strictly inside the corridor between cli_term and kernel_buf"
 );
 
-console.log("✅ All compiler, layout, sub-anchor, reflow, sketch, and remark tests passed!");
+// 8. Test P0: Symmetric Fan-Out, Sibling AABB Anti-Overlap & Port Multiplexing
+const fanOutSpec: IllustrationSpec = {
+  title: "Fan-Out & Port Multiplexing Test",
+  elements: [
+    { id: "gw", type: "card", title: "API Gateway", body: "Ingress Router" },
+    {
+      id: "svc_a",
+      type: "card",
+      title: "Auth Service",
+      place: { rightOf: "gw" },
+    },
+    {
+      id: "svc_b",
+      type: "card",
+      title: "Order Service",
+      place: { rightOf: "gw" },
+    },
+    {
+      id: "svc_c",
+      type: "card",
+      title: "Billing Service",
+      place: { rightOf: "gw" },
+    },
+  ],
+  connections: [
+    { id: "f1", from: "gw@right", to: "svc_a@left", label: "RPC 1" },
+    { id: "f2", from: "gw@right", to: "svc_b@left", label: "RPC 2" },
+    { id: "f3", from: "gw@right", to: "svc_c@left", label: "RPC 3" },
+  ],
+};
+
+const fanScene = compileIllustration(fanOutSpec, lightTheme);
+const svcABox = fanScene.anchorRegistry["svc_a"];
+const svcBBox = fanScene.anchorRegistry["svc_b"];
+const svcCBox = fanScene.anchorRegistry["svc_c"];
+
+assert.ok(
+  svcABox.y + svcABox.height + 20 <= svcBBox.y &&
+    svcBBox.y + svcBBox.height + 20 <= svcCBox.y,
+  "Multiple nodes with rightOf: 'gw' must automatically fan out vertically without overlapping"
+);
+
+const [fe1, fe2, fe3] = fanScene.edges;
+assert.ok(
+  fe1.points[0][1] < fe2.points[0][1] && fe2.points[0][1] < fe3.points[0][1],
+  "Port multiplexing on gw@right must distribute start Y coordinates in ascending target order"
+);
+
+// 9. Test P0: Hanan-Grid Obstacle-Avoiding Orthogonal Routing, Self-Loop & ViewBox Envelope
+const obstacleSpec: IllustrationSpec = {
+  title: "Obstacle Detour & Self-Loop Test",
+  elements: [
+    { id: "n1", type: "rect", label: "Node 1" },
+    { id: "n2", type: "rect", label: "Blocker Node 2", place: { rightOf: "n1", gap: 60 } },
+    { id: "n3", type: "rect", label: "Node 3", place: { rightOf: "n2", gap: 60 } },
+  ],
+  connections: [
+    {
+      id: "jump_edge",
+      from: "n1@right",
+      to: "n3@left",
+      label: "Bypass Blocker",
+      routing: "orthogonal",
+    },
+    {
+      id: "self_edge",
+      from: "n1@top",
+      to: "n1@left",
+      label: "Self Retry",
+      routing: "orthogonal",
+    },
+  ],
+};
+
+const obsScene = compileIllustration(obstacleSpec, lightTheme);
+const blockerBox = obsScene.anchorRegistry["n2"];
+const jumpEdge = obsScene.edges.find((e) => e.id === "jump_edge")!;
+const selfEdge = obsScene.edges.find((e) => e.id === "self_edge")!;
+
+// Verify jump_edge does not pass through blockerBox
+for (let i = 0; i < jumpEdge.points.length - 1; i++) {
+  const [ax, ay] = jumpEdge.points[i];
+  const [bx, by] = jumpEdge.points[i + 1];
+  const segMinX = Math.min(ax, bx);
+  const segMaxX = Math.max(ax, bx);
+  const segMinY = Math.min(ay, by);
+  const segMaxY = Math.max(ay, by);
+  const hitsHoriz =
+    Math.abs(ay - by) < 0.5 &&
+    ay > blockerBox.y &&
+    ay < blockerBox.y + blockerBox.height &&
+    segMaxX > blockerBox.x &&
+    segMinX < blockerBox.x + blockerBox.width;
+  const hitsVert =
+    Math.abs(ax - bx) < 0.5 &&
+    ax > blockerBox.x &&
+    ax < blockerBox.x + blockerBox.width &&
+    segMaxY > blockerBox.y &&
+    segMinY < blockerBox.y + blockerBox.height;
+  assert.ok(
+    !hitsHoriz && !hitsVert,
+    `Segment ${i} of jump_edge must detour around intermediate obstacle n2`
+  );
+}
+
+// Verify self_edge and its label are fully enclosed within the expanded viewBox
+assert.ok(selfEdge.points.length >= 4, "Self-loop must generate an external loop path");
+for (const pt of selfEdge.points) {
+  assert.ok(
+    pt[0] >= 16 &&
+      pt[1] >= 16 &&
+      pt[0] <= obsScene.width - 16 &&
+      pt[1] <= obsScene.height - 16,
+    "ViewBox envelope must expand so self-loop waypoints are never clipped"
+  );
+}
+if (selfEdge.labelBox) {
+  assert.ok(
+    selfEdge.labelBox.x >= 16 &&
+      selfEdge.labelBox.y >= 16 &&
+      selfEdge.labelBox.x + selfEdge.labelBox.width <= obsScene.width - 16 &&
+      selfEdge.labelBox.y + selfEdge.labelBox.height <= obsScene.height - 16,
+    "ViewBox envelope must expand so self-loop labelBox is never clipped"
+  );
+}
+
+console.log("✅ All compiler, layout, sub-anchor, reflow, sketch, remark, and P0 routing tests passed!");

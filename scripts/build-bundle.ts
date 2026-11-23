@@ -50,7 +50,5 @@ const distDir = path.join(rootDir, "dist");
 fs.mkdirSync(distDir, { recursive: true });
 const outFile = path.join(distDir, "millus.bundle.js");
 fs.writeFileSync(outFile, chunks.join("\n\n") + "\n", "utf8");
-// Keep legacy bundle name for backward compatibility
-fs.copyFileSync(outFile, path.join(distDir, "ai-illustration.bundle.js"));
 
 console.log(`✅ Built standalone bundle: ${outFile} (${(fs.statSync(outFile).size / 1024).toFixed(1)} KB)`);

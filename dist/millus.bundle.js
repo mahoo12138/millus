@@ -3178,38 +3178,137 @@ export class HybridLayoutSolver {
       if (!order.includes(n.id)) order.push(n.id);
     }
 
+    // Pre-compute normalized PlaceSpec and symmetric fan-out offsets for nodes sharing (refId, direction)
+    const effPlaceById = new Map                   ();
+    const fanGroups = new Map                  ();
+
+    for (const id of order) {
+      const spec = specById.get(id) ;
+      if (spec.x !== undefined || spec.y !== undefined || !spec.place) continue;
+      const rawPlace = spec.place;
+      const eff            = compact
+        ? {
+            ...rawPlace,
+            rightOf: undefined,
+            leftOf: undefined,
+            below: rawPlace.below || rawPlace.rightOf,
+            above: rawPlace.above || rawPlace.leftOf,
+            gap: rawPlace.gap ? Math.min(rawPlace.gap, 36) : 28,
+          }
+        : rawPlace;
+      effPlaceById.set(id, eff);
+
+      if (!eff.offset) {
+        const dirKey = eff.rightOf
+          ? `rightOf::${eff.rightOf}`
+          : eff.leftOf
+          ? `leftOf::${eff.leftOf}`
+          : eff.below
+          ? `below::${eff.below}`
+          : eff.above
+          ? `above::${eff.above}`
+          : undefined;
+        if (dirKey) {
+          const list = fanGroups.get(dirKey) || [];
+          list.push(id);
+          fanGroups.set(dirKey, list);
+        }
+      }
+    }
+
+    const fanOffsetById = new Map                                                          ();
+    fanGroups.forEach((groupIds, dirKey) => {
+      if (groupIds.length <= 1) return;
+      const isHorizDir =
+        dirKey.startsWith("rightOf::") || dirKey.startsWith("leftOf::");
+
+      if (isHorizDir) {
+        // Stack fan-out siblings vertically and center around ref's vertical midpoint
+        let totalH = 0;
+        const stepGaps           = [];
+        for (let i = 0; i < groupIds.length; i++) {
+          const n = nodeById.get(groupIds[i]) ;
+          totalH += n.height;
+          if (i < groupIds.length - 1) {
+            const nextId = groupIds[i + 1];
+            const g = Math.max(
+              24,
+              gapResolver.getRequiredGap([n.id], [nextId], "vertical")
+            );
+            stepGaps.push(g);
+            totalH += g;
+          }
+        }
+        let cursor = -totalH / 2;
+        for (let i = 0; i < groupIds.length; i++) {
+          const n = nodeById.get(groupIds[i]) ;
+          fanOffsetById.set(n.id, {
+            axis: "y",
+            offsetFromRefCenter: cursor + n.height / 2,
+          });
+          cursor += n.height + (stepGaps[i] || 0);
+        }
+      } else if (!compact) {
+        // Spread below/above fan-out siblings horizontally and center around ref's horizontal midpoint
+        let totalW = 0;
+        const stepGaps           = [];
+        for (let i = 0; i < groupIds.length; i++) {
+          const n = nodeById.get(groupIds[i]) ;
+          totalW += n.width;
+          if (i < groupIds.length - 1) {
+            const nextId = groupIds[i + 1];
+            const g = Math.max(
+              28,
+              gapResolver.getRequiredGap([n.id], [nextId], "horizontal")
+            );
+            stepGaps.push(g);
+            totalW += g;
+          }
+        }
+        let cursor = -totalW / 2;
+        for (let i = 0; i < groupIds.length; i++) {
+          const n = nodeById.get(groupIds[i]) ;
+          fanOffsetById.set(n.id, {
+            axis: "x",
+            offsetFromRefCenter: cursor + n.width / 2,
+          });
+          cursor += n.width + (stepGaps[i] || 0);
+        }
+      }
+    });
+
     let autoFlowCursorX = 0;
     let autoFlowCursorY = 0;
     let prevAutoFlowId                    ;
     const defaultFlowRow =
       !compact && (layout.direction === "row" || layout.type === "free");
+    const placedNodes              = [];
+
+    const nodesOverlap = (a           , b           , pad = 20)          =>
+      a.x - pad < b.x + b.width &&
+      a.x + a.width + pad > b.x &&
+      a.y - pad < b.y + b.height &&
+      a.y + a.height + pad > b.y;
 
     for (const id of order) {
       const node = nodeById.get(id) ;
       const spec = specById.get(id) ;
-      const rawPlace = spec.place;
+      const place = effPlaceById.get(id);
 
       if (spec.x !== undefined || spec.y !== undefined) {
         node.x = spec.x ?? 0;
         node.y = spec.y ?? 0;
-      } else if (rawPlace) {
-        // Transform horizontal relations into vertical when compactViewport is enabled
-        const place            = compact
-          ? {
-              ...rawPlace,
-              rightOf: undefined,
-              leftOf: undefined,
-              below: rawPlace.below || rawPlace.rightOf,
-              above: rawPlace.above || rawPlace.leftOf,
-              gap: rawPlace.gap ? Math.min(rawPlace.gap, 36) : 28,
-            }
-          : rawPlace;
+        placedNodes.push(node);
+        continue;
+      }
 
+      if (place) {
         const refId = getRefId(place);
         const ref = refId ? nodeById.get(refId) : undefined;
         const baseGap = place.gap ?? 44;
         const align = place.align || "center";
         const [ox, oy] = place.offset || [0, 0];
+        const fanOffset = fanOffsetById.get(id);
 
         if (ref) {
           const isHorizPlace = Boolean(place.rightOf || place.leftOf);
@@ -3226,38 +3325,52 @@ export class HybridLayoutSolver {
           );
           const gap = Math.max(baseGap, connReqGap);
 
+          const computeAlignedY = ()         => {
+            if (fanOffset && fanOffset.axis === "y") {
+              return (
+                ref.y +
+                ref.height / 2 +
+                fanOffset.offsetFromRefCenter -
+                node.height / 2 +
+                oy
+              );
+            }
+            return align === "start"
+              ? ref.y + oy
+              : align === "end"
+              ? ref.y + ref.height - node.height + oy
+              : ref.y + (ref.height - node.height) / 2 + oy;
+          };
+
+          const computeAlignedX = ()         => {
+            if (fanOffset && fanOffset.axis === "x") {
+              return (
+                ref.x +
+                ref.width / 2 +
+                fanOffset.offsetFromRefCenter -
+                node.width / 2 +
+                ox
+              );
+            }
+            return align === "start"
+              ? ref.x + ox
+              : align === "end"
+              ? ref.x + ref.width - node.width + ox
+              : ref.x + (ref.width - node.width) / 2 + ox;
+          };
+
           if (place.rightOf) {
             node.x = ref.x + ref.width + gap + ox;
-            node.y =
-              align === "start"
-                ? ref.y + oy
-                : align === "end"
-                ? ref.y + ref.height - node.height + oy
-                : ref.y + (ref.height - node.height) / 2 + oy;
+            node.y = computeAlignedY();
           } else if (place.leftOf) {
             node.x = ref.x - node.width - gap + ox;
-            node.y =
-              align === "start"
-                ? ref.y + oy
-                : align === "end"
-                ? ref.y + ref.height - node.height + oy
-                : ref.y + (ref.height - node.height) / 2 + oy;
+            node.y = computeAlignedY();
           } else if (place.below) {
             node.y = ref.y + ref.height + gap + oy;
-            node.x =
-              align === "start"
-                ? ref.x + ox
-                : align === "end"
-                ? ref.x + ref.width - node.width + ox
-                : ref.x + (ref.width - node.width) / 2 + ox;
+            node.x = computeAlignedX();
           } else if (place.above) {
             node.y = ref.y - node.height - gap + oy;
-            node.x =
-              align === "start"
-                ? ref.x + ox
-                : align === "end"
-                ? ref.x + ref.width - node.width + ox
-                : ref.x + (ref.width - node.width) / 2 + ox;
+            node.x = computeAlignedX();
           }
         }
       } else {
@@ -3291,6 +3404,23 @@ export class HybridLayoutSolver {
           autoFlowCursorY += node.height + (layout.gap ?? 24);
         }
       }
+
+      // AABB collision guard: nudge node if it overlaps any already-placed sibling
+      let guardIter = 0;
+      while (guardIter < 16) {
+        const hit = placedNodes.find((p) => nodesOverlap(node, p, 20));
+        if (!hit) break;
+        if (place?.above) {
+          node.y = hit.y - node.height - 24;
+        } else if (place?.leftOf) {
+          node.x = hit.x - node.width - 28;
+        } else {
+          node.y = hit.y + hit.height + 24;
+        }
+        guardIter++;
+      }
+
+      placedNodes.push(node);
     }
 
     let minX = Infinity;
@@ -3321,10 +3451,13 @@ export class HybridLayoutSolver {
 
 // --- src/compiler/edge-router.ts ---
 /**
- * Semantic Anchor Resolver & Edge Router
- * Supports orthogonal rounded-corner routing, smooth cubic bezier curves, and straight lines
- * across top-level nodes, nested group nodes, code-block/terminal lines, and table cells,
- * with corridor-aware label placement, port alignment, and collision avoidance.
+ * Semantic Anchor Resolver & Obstacle-Aware Edge Router
+ * Features:
+ *  - Port Multiplexing & Crossing-Minimizing Port Ordering
+ *  - Exact Geometric Perimeter Projection (Rect, Diamond, Circle, Ellipse)
+ *  - Hanan-Grid Dijkstra Obstacle-Avoiding Orthogonal Routing
+ *  - Self-Loop Routing (Single-Side & Corner Loops)
+ *  - Corridor-Aware Label Placement & Multi-Label / Node Collision Avoidance
  */
 
 function parseEndpoint(raw        )                 {
@@ -3435,8 +3568,13 @@ function chooseAutoSides(
   fromBox             ,
   toBox             ,
   outerFromBox             ,
-  outerToBox             
+  outerToBox             ,
+  isSelfLoop         
 )                                           {
+  if (isSelfLoop) {
+    return { fromSide: "right", toSide: "top" };
+  }
+
   const refFrom = outerFromBox !== outerToBox ? outerFromBox : fromBox;
   const refTo = outerFromBox !== outerToBox ? outerToBox : toBox;
 
@@ -3469,10 +3607,8 @@ function chooseAutoSides(
 }
 
 /**
- * Resolves port coordinate on a box or sub-anchor.
- * When a port is on an interior sub-anchor (such as a middle table cell `cell_0_1@left`)
- * and connects to an external node, projects the normal axis onto the owner node's outer boundary
- * so the connection line never strikes through adjacent table cells or code lines.
+ * Resolves port coordinate on a box or sub-anchor, projecting interior sub-anchors onto the
+ * owner node's outer boundary and snapping to non-rectangular geometric perimeters (diamond, circle, ellipse).
  */
 function getProjectedPortPoint(
   box             ,
@@ -3484,27 +3620,74 @@ function getProjectedPortPoint(
   let px        ;
   let py        ;
 
+  const targetBox = isExternalConnection && ownerBox !== box ? ownerBox : box;
+  const shape = targetBox.shape || "rect";
+
   switch (side) {
-    case "top":
+    case "top": {
       px = box.x + box.width * ratio;
       py = isExternalConnection ? Math.min(box.y, ownerBox.y) : box.y;
+      if (shape === "diamond") {
+        const u = Math.min(1, Math.abs(2 * ratio - 1));
+        py = targetBox.y + (targetBox.height / 2) * u;
+      } else if (shape === "circle" || shape === "ellipse") {
+        const u = Math.max(-1, Math.min(1, 2 * ratio - 1));
+        py =
+          targetBox.y +
+          targetBox.height / 2 -
+          (targetBox.height / 2) * Math.sqrt(Math.max(0, 1 - u * u));
+      }
       break;
-    case "bottom":
+    }
+    case "bottom": {
       px = box.x + box.width * ratio;
       py = isExternalConnection
         ? Math.max(box.y + box.height, ownerBox.y + ownerBox.height)
         : box.y + box.height;
+      if (shape === "diamond") {
+        const u = Math.min(1, Math.abs(2 * ratio - 1));
+        py = targetBox.y + targetBox.height - (targetBox.height / 2) * u;
+      } else if (shape === "circle" || shape === "ellipse") {
+        const u = Math.max(-1, Math.min(1, 2 * ratio - 1));
+        py =
+          targetBox.y +
+          targetBox.height / 2 +
+          (targetBox.height / 2) * Math.sqrt(Math.max(0, 1 - u * u));
+      }
       break;
-    case "left":
+    }
+    case "left": {
       px = isExternalConnection ? Math.min(box.x, ownerBox.x) : box.x;
       py = box.y + box.height * ratio;
+      if (shape === "diamond") {
+        const u = Math.min(1, Math.abs(2 * ratio - 1));
+        px = targetBox.x + (targetBox.width / 2) * u;
+      } else if (shape === "circle" || shape === "ellipse") {
+        const u = Math.max(-1, Math.min(1, 2 * ratio - 1));
+        px =
+          targetBox.x +
+          targetBox.width / 2 -
+          (targetBox.width / 2) * Math.sqrt(Math.max(0, 1 - u * u));
+      }
       break;
-    case "right":
+    }
+    case "right": {
       px = isExternalConnection
         ? Math.max(box.x + box.width, ownerBox.x + ownerBox.width)
         : box.x + box.width;
       py = box.y + box.height * ratio;
+      if (shape === "diamond") {
+        const u = Math.min(1, Math.abs(2 * ratio - 1));
+        px = targetBox.x + targetBox.width - (targetBox.width / 2) * u;
+      } else if (shape === "circle" || shape === "ellipse") {
+        const u = Math.max(-1, Math.min(1, 2 * ratio - 1));
+        px =
+          targetBox.x +
+          targetBox.width / 2 +
+          (targetBox.width / 2) * Math.sqrt(Math.max(0, 1 - u * u));
+      }
       break;
+    }
     case "center":
     default:
       px = box.x + box.width / 2;
@@ -3517,7 +3700,7 @@ function getProjectedPortPoint(
 
 /**
  * Aligns facing ports along the cross-axis when two connected boxes overlap on that axis
- * and their port coordinates are close, eliminating unintended micro-doglegs and kinks.
+ * and neither side is multiplexed or fixed to a non-rectangular vertex.
  */
 function alignFacingPorts(
   p1                  ,
@@ -3526,8 +3709,8 @@ function alignFacingPorts(
   toBox             ,
   fromSide          ,
   toSide          ,
-  fromExplicitRatio         ,
-  toExplicitRatio         ,
+  fromFixedRatio         ,
+  toFixedRatio         ,
   isFromSubAnchor         ,
   isToSubAnchor         
 )       {
@@ -3539,15 +3722,19 @@ function alignFacingPorts(
     (fromSide === "top" && toSide === "bottom");
 
   const fixedFrom =
-    fromExplicitRatio || Boolean(fromBox.shape && fromBox.shape !== "rect");
+    fromFixedRatio || Boolean(fromBox.shape && fromBox.shape !== "rect");
   const fixedTo =
-    toExplicitRatio || Boolean(toBox.shape && toBox.shape !== "rect");
+    toFixedRatio || Boolean(toBox.shape && toBox.shape !== "rect");
 
   if (isOppositeHoriz) {
     const dy = Math.abs(p1[1] - p2[1]);
     if (dy > 0.5 && dy <= 32) {
-      const m1 = isFromSubAnchor ? Math.min(4, fromBox.height * 0.2) : Math.min(16, fromBox.height * 0.22);
-      const m2 = isToSubAnchor ? Math.min(4, toBox.height * 0.2) : Math.min(16, toBox.height * 0.22);
+      const m1 = isFromSubAnchor
+        ? Math.min(4, fromBox.height * 0.2)
+        : Math.min(16, fromBox.height * 0.22);
+      const m2 = isToSubAnchor
+        ? Math.min(4, toBox.height * 0.2)
+        : Math.min(16, toBox.height * 0.22);
       const min1 = fixedFrom ? p1[1] : fromBox.y + m1;
       const max1 = fixedFrom ? p1[1] : fromBox.y + fromBox.height - m1;
       const min2 = fixedTo ? p2[1] : toBox.y + m2;
@@ -3570,8 +3757,12 @@ function alignFacingPorts(
   } else if (isOppositeVert) {
     const dx = Math.abs(p1[0] - p2[0]);
     if (dx > 0.5 && dx <= 32) {
-      const m1 = isFromSubAnchor ? Math.min(6, fromBox.width * 0.2) : Math.min(18, fromBox.width * 0.2);
-      const m2 = isToSubAnchor ? Math.min(6, toBox.width * 0.2) : Math.min(18, toBox.width * 0.2);
+      const m1 = isFromSubAnchor
+        ? Math.min(6, fromBox.width * 0.2)
+        : Math.min(18, fromBox.width * 0.2);
+      const m2 = isToSubAnchor
+        ? Math.min(6, toBox.width * 0.2)
+        : Math.min(18, toBox.width * 0.2);
       const min1 = fixedFrom ? p1[0] : fromBox.x + m1;
       const max1 = fixedFrom ? p1[0] : fromBox.x + fromBox.width - m1;
       const min2 = fixedTo ? p2[0] : toBox.x + m2;
@@ -3657,7 +3848,8 @@ function buildRoundedPolylinePath(
 )         {
   const pts = simplifyPolyline(points);
   if (pts.length === 0) return "";
-  if (pts.length === 1) return `M ${Math.round(pts[0][0])} ${Math.round(pts[0][1])}`;
+  if (pts.length === 1)
+    return `M ${Math.round(pts[0][0])} ${Math.round(pts[0][1])}`;
 
   if (pts.length === 2) {
     return `M ${Math.round(pts[0][0])} ${Math.round(pts[0][1])} L ${Math.round(pts[1][0])} ${Math.round(pts[1][1])}`;
@@ -3698,6 +3890,83 @@ function buildRoundedPolylinePath(
   return d;
 }
 
+/**
+ * Builds orthogonal waypoints for a self-loop edge (from a node back to itself)
+ */
+function buildSelfLoopWaypoints(
+  p1                  ,
+  side1          ,
+  p2                  ,
+  side2          ,
+  ownerBox             ,
+  stub = 20
+)                     {
+  const loopOut = Math.max(28, stub + 8);
+  const [n1x, n1y] = getNormalVector(side1);
+  const [n2x, n2y] = getNormalVector(side2);
+
+  if (side1 === side2) {
+    if (side1 === "right" || side1 === "left") {
+      const outX =
+        side1 === "right"
+          ? ownerBox.x + ownerBox.width + loopOut
+          : ownerBox.x - loopOut;
+      return simplifyPolyline([p1, [outX, p1[1]], [outX, p2[1]], p2]);
+    }
+    const outY =
+      side1 === "bottom"
+        ? ownerBox.y + ownerBox.height + loopOut
+        : ownerBox.y - loopOut;
+    return simplifyPolyline([p1, [p1[0], outY], [p2[0], outY], p2]);
+  }
+
+  const out1                   = [
+    side1 === "right"
+      ? ownerBox.x + ownerBox.width + loopOut
+      : side1 === "left"
+      ? ownerBox.x - loopOut
+      : p1[0] + n1x * loopOut,
+    side1 === "bottom"
+      ? ownerBox.y + ownerBox.height + loopOut
+      : side1 === "top"
+      ? ownerBox.y - loopOut
+      : p1[1] + n1y * loopOut,
+  ];
+  const out2                   = [
+    side2 === "right"
+      ? ownerBox.x + ownerBox.width + loopOut
+      : side2 === "left"
+      ? ownerBox.x - loopOut
+      : p2[0] + n2x * loopOut,
+    side2 === "bottom"
+      ? ownerBox.y + ownerBox.height + loopOut
+      : side2 === "top"
+      ? ownerBox.y - loopOut
+      : p2[1] + n2y * loopOut,
+  ];
+
+  const isHoriz1 = side1 === "left" || side1 === "right";
+  const isHoriz2 = side2 === "left" || side2 === "right";
+
+  if (isHoriz1 !== isHoriz2) {
+    const corner                   = isHoriz1
+      ? [out1[0], out2[1]]
+      : [out2[0], out1[1]];
+    return simplifyPolyline([p1, out1, corner, out2, p2]);
+  }
+
+  // Opposite sides on same node (e.g. right -> left): loop around top of node
+  const topY = ownerBox.y - loopOut;
+  return simplifyPolyline([
+    p1,
+    out1,
+    [out1[0], topY],
+    [out2[0], topY],
+    out2,
+    p2,
+  ]);
+}
+
 function buildOrthogonalWaypoints(
   p1                  ,
   side1          ,
@@ -3706,7 +3975,8 @@ function buildOrthogonalWaypoints(
   corridor                ,
   outerFromBox             ,
   outerToBox             ,
-  stub = 20
+  stub = 20,
+  corridorOffset = 0
 )                     {
   const [n1x, n1y] = getNormalVector(side1);
   const [n2x, n2y] = getNormalVector(side2);
@@ -3719,21 +3989,23 @@ function buildOrthogonalWaypoints(
 
   if (isHoriz1 && isHoriz2) {
     if (side1 === "right" && side2 === "right") {
-      const maxX = Math.max(
-        s1[0],
-        s2[0],
-        outerFromBox.x + outerFromBox.width + stub,
-        outerToBox.x + outerToBox.width + stub
-      );
+      const maxX =
+        Math.max(
+          s1[0],
+          s2[0],
+          outerFromBox.x + outerFromBox.width + stub,
+          outerToBox.x + outerToBox.width + stub
+        ) + Math.max(0, corridorOffset);
       return simplifyPolyline([p1, [maxX, p1[1]], [maxX, p2[1]], p2]);
     }
     if (side1 === "left" && side2 === "left") {
-      const minX = Math.min(
-        s1[0],
-        s2[0],
-        outerFromBox.x - stub,
-        outerToBox.x - stub
-      );
+      const minX =
+        Math.min(
+          s1[0],
+          s2[0],
+          outerFromBox.x - stub,
+          outerToBox.x - stub
+        ) + Math.min(0, corridorOffset);
       return simplifyPolyline([p1, [minX, p1[1]], [minX, p2[1]], p2]);
     }
 
@@ -3746,16 +4018,23 @@ function buildOrthogonalWaypoints(
     }
 
     if (forward) {
-      const midX = corridor.horiz
-        ? (corridor.horiz[0] + corridor.horiz[1]) / 2
-        : (s1[0] + s2[0]) / 2;
+      let midX = corridor.horiz
+        ? (corridor.horiz[0] + corridor.horiz[1]) / 2 + corridorOffset
+        : (s1[0] + s2[0]) / 2 + corridorOffset;
+      if (corridor.horiz && corridor.horiz[1] - corridor.horiz[0] > 24) {
+        midX = Math.max(
+          corridor.horiz[0] + 10,
+          Math.min(corridor.horiz[1] - 10, midX)
+        );
+      }
       return simplifyPolyline([p1, [midX, p1[1]], [midX, p2[1]], p2]);
     }
 
     // Reverse horizontal connection: step out to s1, route around via midY, step into s2
-    const midY = corridor.vert
-      ? (corridor.vert[0] + corridor.vert[1]) / 2
-      : (p1[1] + p2[1]) / 2;
+    const midY =
+      (corridor.vert
+        ? (corridor.vert[0] + corridor.vert[1]) / 2
+        : (p1[1] + p2[1]) / 2) + corridorOffset;
     return simplifyPolyline([
       p1,
       s1,
@@ -3768,21 +4047,23 @@ function buildOrthogonalWaypoints(
 
   if (!isHoriz1 && !isHoriz2) {
     if (side1 === "bottom" && side2 === "bottom") {
-      const maxY = Math.max(
-        s1[1],
-        s2[1],
-        outerFromBox.y + outerFromBox.height + stub,
-        outerToBox.y + outerToBox.height + stub
-      );
+      const maxY =
+        Math.max(
+          s1[1],
+          s2[1],
+          outerFromBox.y + outerFromBox.height + stub,
+          outerToBox.y + outerToBox.height + stub
+        ) + Math.max(0, corridorOffset);
       return simplifyPolyline([p1, [p1[0], maxY], [p2[0], maxY], p2]);
     }
     if (side1 === "top" && side2 === "top") {
-      const minY = Math.min(
-        s1[1],
-        s2[1],
-        outerFromBox.y - stub,
-        outerToBox.y - stub
-      );
+      const minY =
+        Math.min(
+          s1[1],
+          s2[1],
+          outerFromBox.y - stub,
+          outerToBox.y - stub
+        ) + Math.min(0, corridorOffset);
       return simplifyPolyline([p1, [p1[0], minY], [p2[0], minY], p2]);
     }
 
@@ -3795,15 +4076,22 @@ function buildOrthogonalWaypoints(
     }
 
     if (forward) {
-      const midY = corridor.vert
-        ? (corridor.vert[0] + corridor.vert[1]) / 2
-        : (s1[1] + s2[1]) / 2;
+      let midY = corridor.vert
+        ? (corridor.vert[0] + corridor.vert[1]) / 2 + corridorOffset
+        : (s1[1] + s2[1]) / 2 + corridorOffset;
+      if (corridor.vert && corridor.vert[1] - corridor.vert[0] > 24) {
+        midY = Math.max(
+          corridor.vert[0] + 10,
+          Math.min(corridor.vert[1] - 10, midY)
+        );
+      }
       return simplifyPolyline([p1, [p1[0], midY], [p2[0], midY], p2]);
     }
 
-    const midX = corridor.horiz
-      ? (corridor.horiz[0] + corridor.horiz[1]) / 2
-      : (p1[0] + p2[0]) / 2;
+    const midX =
+      (corridor.horiz
+        ? (corridor.horiz[0] + corridor.horiz[1]) / 2
+        : (p1[0] + p2[0]) / 2) + corridorOffset;
     return simplifyPolyline([
       p1,
       s1,
@@ -3833,6 +4121,354 @@ function buildOrthogonalWaypoints(
   }
   return simplifyPolyline([p1, s1, [s2[0], s1[1]], s2, p2]);
 }
+
+// ============================================================================
+// Obstacle Detection & Hanan Grid Orthogonal A* / Dijkstra Detour Solver
+// ============================================================================
+
+function boxContainsBox(outer             , inner             )          {
+  return (
+    outer.x <= inner.x + 1 &&
+    outer.y <= inner.y + 1 &&
+    outer.x + outer.width >= inner.x + inner.width - 1 &&
+    outer.y + outer.height >= inner.y + inner.height - 1
+  );
+}
+
+function buildEdgeObstacles(
+  fromOwnerId        ,
+  toOwnerId        ,
+  ownerFromBox             ,
+  ownerToBox             ,
+  registry                             
+)                                                                  {
+  const paddedObstacles                = [];
+  const rawObstacles                = [];
+
+  // Shrink endpoint owner boxes by 3px so ports on their perimeter don't collide,
+  // while any segment cutting across their interior is rejected.
+  const shrink = 3;
+  if (ownerFromBox.width > shrink * 2 && ownerFromBox.height > shrink * 2) {
+    paddedObstacles.push({
+      x: ownerFromBox.x + shrink,
+      y: ownerFromBox.y + shrink,
+      width: ownerFromBox.width - shrink * 2,
+      height: ownerFromBox.height - shrink * 2,
+    });
+    rawObstacles.push(ownerFromBox);
+  }
+  if (
+    ownerToBox !== ownerFromBox &&
+    ownerToBox.width > shrink * 2 &&
+    ownerToBox.height > shrink * 2
+  ) {
+    paddedObstacles.push({
+      x: ownerToBox.x + shrink,
+      y: ownerToBox.y + shrink,
+      width: ownerToBox.width - shrink * 2,
+      height: ownerToBox.height - shrink * 2,
+    });
+    rawObstacles.push(ownerToBox);
+  }
+
+  const pad = 8;
+  for (const [key, box] of Object.entries(registry)) {
+    // Only consider primary node boxes, not sub-anchors
+    if (box.ownerNodeId && box.ownerNodeId !== key) continue;
+    if (key === fromOwnerId || key === toOwnerId) continue;
+
+    // Skip container groups that enclose either endpoint or child nodes inside either endpoint
+    if (
+      boxContainsBox(box, ownerFromBox) ||
+      boxContainsBox(box, ownerToBox) ||
+      boxContainsBox(ownerFromBox, box) ||
+      boxContainsBox(ownerToBox, box)
+    ) {
+      continue;
+    }
+
+    rawObstacles.push(box);
+    paddedObstacles.push({
+      x: box.x - pad,
+      y: box.y - pad,
+      width: box.width + pad * 2,
+      height: box.height + pad * 2,
+    });
+  }
+
+  return { paddedObstacles, rawObstacles };
+}
+
+function segmentIntersectsBox(
+  a                  ,
+  b                  ,
+  box             
+)          {
+  const minX = Math.min(a[0], b[0]);
+  const maxX = Math.max(a[0], b[0]);
+  const minY = Math.min(a[1], b[1]);
+  const maxY = Math.max(a[1], b[1]);
+
+  const bx1 = box.x;
+  const by1 = box.y;
+  const bx2 = box.x + box.width;
+  const by2 = box.y + box.height;
+
+  // Axis-aligned orthogonal segment fast check
+  if (Math.abs(a[1] - b[1]) <= 0.5) {
+    const y = a[1];
+    return y > by1 && y < by2 && maxX > bx1 && minX < bx2;
+  }
+  if (Math.abs(a[0] - b[0]) <= 0.5) {
+    const x = a[0];
+    return x > bx1 && x < bx2 && maxY > by1 && minY < by2;
+  }
+
+  // General Liang-Barsky segment-AABB intersection
+  if (maxX <= bx1 || minX >= bx2 || maxY <= by1 || minY >= by2) {
+    return false;
+  }
+  let t0 = 0;
+  let t1 = 1;
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  const p = [-dx, dx, -dy, dy];
+  const q = [a[0] - bx1, bx2 - a[0], a[1] - by1, by2 - a[1]];
+
+  for (let i = 0; i < 4; i++) {
+    if (Math.abs(p[i]) < 1e-6) {
+      if (q[i] <= 0) return false;
+    } else {
+      const r = q[i] / p[i];
+      if (p[i] < 0) {
+        if (r > t1) return false;
+        if (r > t0) t0 = r;
+      } else {
+        if (r < t0) return false;
+        if (r < t1) t1 = r;
+      }
+    }
+  }
+  return t0 < t1;
+}
+
+function polylineHitsObstacles(
+  points                    ,
+  obstacles               
+)          {
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i];
+    const b = points[i + 1];
+    for (const obs of obstacles) {
+      if (segmentIntersectsBox(a, b, obs)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function pointInsideAnyObstacle(
+  pt                  ,
+  obstacles               
+)          {
+  for (const obs of obstacles) {
+    if (
+      pt[0] > obs.x &&
+      pt[0] < obs.x + obs.width &&
+      pt[1] > obs.y &&
+      pt[1] < obs.y + obs.height
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Finds a minimum-bend, shortest-path orthogonal route from p1 to p2 on a Hanan visibility grid
+ * avoiding all intermediate and endpoint obstacle bounding boxes.
+ */
+function findObstacleFreeOrthogonalPath(
+  p1                  ,
+  side1          ,
+  p2                  ,
+  side2          ,
+  rawObstacles               ,
+  paddedObstacles               ,
+  stub = 20
+)                            {
+  const [n1x, n1y] = getNormalVector(side1);
+  const [n2x, n2y] = getNormalVector(side2);
+
+  let s1                   = [p1[0] + n1x * stub, p1[1] + n1y * stub];
+  if (
+    pointInsideAnyObstacle(s1, paddedObstacles) ||
+    polylineHitsObstacles([p1, s1], paddedObstacles)
+  ) {
+    const shortStub                   = [p1[0] + n1x * 8, p1[1] + n1y * 8];
+    s1 = !polylineHitsObstacles([p1, shortStub], paddedObstacles)
+      ? shortStub
+      : p1;
+  }
+
+  let s2                   = [p2[0] + n2x * stub, p2[1] + n2y * stub];
+  if (
+    pointInsideAnyObstacle(s2, paddedObstacles) ||
+    polylineHitsObstacles([s2, p2], paddedObstacles)
+  ) {
+    const shortStub                   = [p2[0] + n2x * 8, p2[1] + n2y * 8];
+    s2 = !polylineHitsObstacles([shortStub, p2], paddedObstacles)
+      ? shortStub
+      : p2;
+  }
+
+  const clearance = 18;
+  const xSet = new Set        ([
+    Math.round(p1[0]),
+    Math.round(p2[0]),
+    Math.round(s1[0]),
+    Math.round(s2[0]),
+    Math.round((s1[0] + s2[0]) / 2),
+  ]);
+  const ySet = new Set        ([
+    Math.round(p1[1]),
+    Math.round(p2[1]),
+    Math.round(s1[1]),
+    Math.round(s2[1]),
+    Math.round((s1[1] + s2[1]) / 2),
+  ]);
+
+  for (const b of rawObstacles) {
+    xSet.add(Math.round(b.x - clearance));
+    xSet.add(Math.round(b.x + b.width + clearance));
+    ySet.add(Math.round(b.y - clearance));
+    ySet.add(Math.round(b.y + b.height + clearance));
+  }
+
+  const baseXs = Array.from(xSet).sort((a, b) => a - b);
+  const baseYs = Array.from(ySet).sort((a, b) => a - b);
+  for (let i = 0; i < baseXs.length - 1; i++) {
+    if (baseXs[i + 1] - baseXs[i] > 16) {
+      xSet.add(Math.round((baseXs[i] + baseXs[i + 1]) / 2));
+    }
+  }
+  for (let i = 0; i < baseYs.length - 1; i++) {
+    if (baseYs[i + 1] - baseYs[i] > 16) {
+      ySet.add(Math.round((baseYs[i] + baseYs[i + 1]) / 2));
+    }
+  }
+
+  // Ensure exact s1 and s2 coordinates are in the grid
+  xSet.add(s1[0]);
+  xSet.add(s2[0]);
+  ySet.add(s1[1]);
+  ySet.add(s2[1]);
+
+  const xs = Array.from(xSet).sort((a, b) => a - b);
+  const ys = Array.from(ySet).sort((a, b) => a - b);
+  const nx = xs.length;
+  const ny = ys.length;
+
+  const startXi = xs.indexOf(s1[0]);
+  const startYi = ys.indexOf(s1[1]);
+  const endXi = xs.indexOf(s2[0]);
+  const endYi = ys.indexOf(s2[1]);
+  if (startXi < 0 || startYi < 0 || endXi < 0 || endYi < 0) return null;
+
+  // Directions: 0 = horiz, 1 = vert
+  const initDir = side1 === "left" || side1 === "right" ? 0 : 1;
+  const targetDir = side2 === "left" || side2 === "right" ? 0 : 1;
+  const stateCount = nx * ny * 2;
+  const dist = new Float64Array(stateCount).fill(Infinity);
+  const parent = new Int32Array(stateCount).fill(-1);
+  const visited = new Uint8Array(stateCount);
+
+  const encode = (xi        , yi        , dir        ) =>
+    (yi * nx + xi) * 2 + dir;
+
+  const startState = encode(startXi, startYi, initDir);
+  dist[startState] = 0;
+
+  const bendPenalty = 85;
+  const dxs = [1, -1, 0, 0];
+  const dys = [0, 0, 1, -1];
+  const dirs = [0, 0, 1, 1];
+
+  for (let step = 0; step < stateCount; step++) {
+    let u = -1;
+    let bestD = Infinity;
+    for (let s = 0; s < stateCount; s++) {
+      if (!visited[s] && dist[s] < bestD) {
+        bestD = dist[s];
+        u = s;
+      }
+    }
+    if (u === -1 || bestD === Infinity) break;
+    visited[u] = 1;
+
+    const uDir = u & 1;
+    const cell = u >> 1;
+    const uXi = cell % nx;
+    const uYi = (cell / nx) | 0;
+
+    if (uXi === endXi && uYi === endYi) {
+      break;
+    }
+
+    const ux = xs[uXi];
+    const uy = ys[uYi];
+
+    for (let d = 0; d < 4; d++) {
+      const vXi = uXi + dxs[d];
+      const vYi = uYi + dys[d];
+      if (vXi < 0 || vXi >= nx || vYi < 0 || vYi >= ny) continue;
+
+      const vDir = dirs[d];
+      const vx = xs[vXi];
+      const vy = ys[vYi];
+
+      if (polylineHitsObstacles([[ux, uy], [vx, vy]], paddedObstacles)) {
+        continue;
+      }
+
+      const segLen = Math.abs(vx - ux) + Math.abs(vy - uy);
+      let extraCost = uDir !== vDir ? bendPenalty : 0;
+      if (vXi === endXi && vYi === endYi && vDir !== targetDir) {
+        extraCost += bendPenalty;
+      }
+
+      const vState = encode(vXi, vYi, vDir);
+      const nextDist = bestD + segLen + extraCost;
+      if (nextDist < dist[vState]) {
+        dist[vState] = nextDist;
+        parent[vState] = u;
+      }
+    }
+  }
+
+  const endState0 = encode(endXi, endYi, 0);
+  const endState1 = encode(endXi, endYi, 1);
+  let curr =
+    dist[endState0] <= dist[endState1] ? endState0 : endState1;
+  if (dist[curr] === Infinity) return null;
+
+  const gridPts                     = [];
+  while (curr !== -1) {
+    const cell = curr >> 1;
+    const xi = cell % nx;
+    const yi = (cell / nx) | 0;
+    gridPts.push([xs[xi], ys[yi]]);
+    curr = parent[curr];
+  }
+  gridPts.reverse();
+
+  return simplifyPolyline([p1, ...gridPts, p2]);
+}
+
+// ============================================================================
+// Bezier & Polyline Label Evaluation Helpers
+// ============================================================================
 
 function evalCubicBezier(
   p0                  ,
@@ -3912,6 +4548,37 @@ function evalPointAlongPolyline(
   return pts[pts.length - 1];
 }
 
+function findLongestClearSegmentMidpoint(
+  pts                    ,
+  obstacles               
+)                   {
+  if (pts.length === 0) return [0, 0];
+  if (pts.length === 1) return pts[0];
+
+  let bestMid                   = [
+    (pts[0][0] + pts[1][0]) / 2,
+    (pts[0][1] + pts[1][1]) / 2,
+  ];
+  let bestScore = -Infinity;
+
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i];
+    const b = pts[i + 1];
+    const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    const mid                   = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+    const hitObs = pointInsideAnyObstacle(mid, obstacles);
+    // Prefer middle segments of a multi-segment route that are long and clear of obstacles
+    const isInteriorSeg = pts.length >= 4 && i > 0 && i < pts.length - 2;
+    const score =
+      len + (isInteriorSeg ? 35 : 0) - (hitObs ? 1000 : 0);
+    if (score > bestScore) {
+      bestScore = score;
+      bestMid = mid;
+    }
+  }
+  return bestMid;
+}
+
 function resolveLabelRatio(
   pos                                 
 )                                         {
@@ -3941,6 +4608,10 @@ function boxesOverlap(
   );
 }
 
+// ============================================================================
+// Main Connection Routing Pipeline
+// ============================================================================
+
 export function routeConnections(
   connections                              ,
   anchorRegistry                             ,
@@ -3950,13 +4621,8 @@ export function routeConnections(
 )              {
   if (!connections || connections.length === 0) return [];
 
-  const edges              = [];
-  const placedLabelBoxes         
-              
-              
-                  
-                   
-     = [];
+  // Pass 1: Resolve endpoints, containers, sides, and collect port groups for Port Multiplexing
+  const prepared                     = [];
 
   connections.forEach((conn, idx) => {
     const id = conn.id || `edge_${idx + 1}`;
@@ -3971,6 +4637,9 @@ export function routeConnections(
 
     const fromOwnerId = fromBox.ownerNodeId || fromParsed.targetId;
     const toOwnerId = toBox.ownerNodeId || toParsed.targetId;
+    const isSelfLoop =
+      fromParsed.targetId === toParsed.targetId ||
+      (fromOwnerId === toOwnerId && fromBox === toBox);
     const isExternal = fromOwnerId !== toOwnerId;
     const isFromSubAnchor = fromParsed.targetId !== fromOwnerId;
     const isToSubAnchor = toParsed.targetId !== toOwnerId;
@@ -3983,56 +4652,248 @@ export function routeConnections(
       fromBox,
       toBox,
       outerFromBox,
-      outerToBox
+      outerToBox,
+      isSelfLoop
     );
-    const fromSide = compact
+
+    let fromSide = compact
       ? autoSides.fromSide
       : fromParsed.side || autoSides.fromSide;
-    const toSide = compact
+    let toSide = compact
       ? autoSides.toSide
       : toParsed.side || autoSides.toSide;
+
+    if (isSelfLoop && !fromParsed.side && toParsed.side) {
+      fromSide = toParsed.side === "top" ? "right" : "top";
+    } else if (isSelfLoop && fromParsed.side && !toParsed.side) {
+      toSide = fromParsed.side;
+    }
+
+    prepared.push({
+      conn,
+      idx,
+      id,
+      fromParsed,
+      toParsed,
+      fromBox,
+      toBox,
+      fromOwnerId,
+      toOwnerId,
+      isExternal,
+      isSelfLoop,
+      isFromSubAnchor,
+      isToSubAnchor,
+      ownerFromBox,
+      ownerToBox,
+      outerFromBox,
+      outerToBox,
+      corridor,
+      fromSide,
+      toSide,
+      fromRatio: fromParsed.ratio,
+      toRatio: toParsed.ratio,
+      fromMultiplexed: false,
+      toMultiplexed: false,
+      corridorOffset: 0,
+    });
+  });
+
+  // Pass 1b: Port Multiplexing (distribute edges sharing the same node side & segment)
+                           
+                           
+                       
+                      
+   
+
+  const portGroups = new Map                         ();
+  const makePortKey = (
+    ownerId        ,
+    box             ,
+    side          
+  )         => {
+    const isHoriz = side === "left" || side === "right";
+    const segStart = isHoriz ? Math.round(box.y) : Math.round(box.x);
+    const segLen = isHoriz ? Math.round(box.height) : Math.round(box.width);
+    return `${ownerId}::${side}::${segStart}_${segLen}`;
+  };
+
+  for (const item of prepared) {
+    if (!item.fromParsed.explicitRatio && item.fromSide !== "center") {
+      const key = makePortKey(item.fromOwnerId, item.fromBox, item.fromSide);
+      const isHoriz = item.fromSide === "left" || item.fromSide === "right";
+      const otherCoord = isHoriz
+        ? item.toBox.y + item.toBox.height / 2
+        : item.toBox.x + item.toBox.width / 2;
+      const list = portGroups.get(key) || [];
+      list.push({ item, end: "from", sortCoord: otherCoord });
+      portGroups.set(key, list);
+    }
+
+    if (!item.toParsed.explicitRatio && item.toSide !== "center") {
+      const key = makePortKey(item.toOwnerId, item.toBox, item.toSide);
+      const isHoriz = item.toSide === "left" || item.toSide === "right";
+      const otherCoord = isHoriz
+        ? item.fromBox.y + item.fromBox.height / 2
+        : item.fromBox.x + item.fromBox.width / 2;
+      const list = portGroups.get(key) || [];
+      list.push({ item, end: "to", sortCoord: otherCoord });
+      portGroups.set(key, list);
+    }
+  }
+
+  portGroups.forEach((entries) => {
+    if (entries.length <= 1) return;
+    entries.sort((a, b) => {
+      if (Math.abs(a.sortCoord - b.sortCoord) > 1) {
+        return a.sortCoord - b.sortCoord;
+      }
+      if (a.item.idx !== b.item.idx) return a.item.idx - b.item.idx;
+      return a.end === "from" ? -1 : 1;
+    });
+
+    const m = entries.length;
+    const span = Math.min(0.64, (m - 1) * 0.22);
+    const startRatio = 0.5 - span / 2;
+    const step = m > 1 ? span / (m - 1) : 0;
+
+    entries.forEach((entry, i) => {
+      const r = startRatio + i * step;
+      if (entry.end === "from") {
+        entry.item.fromRatio = r;
+        entry.item.fromMultiplexed = true;
+      } else {
+        entry.item.toRatio = r;
+        entry.item.toMultiplexed = true;
+      }
+    });
+  });
+
+  // Pass 1c: Parallel Corridor Channel Offsetting (separate multiple Z-bends in the same corridor)
+  const corridorGroups = new Map                            ();
+  for (const item of prepared) {
+    if (item.isSelfLoop || (item.conn.routing && item.conn.routing !== "orthogonal")) {
+      continue;
+    }
+    if (item.corridor.horiz) {
+      const k = `H::${Math.round(item.corridor.horiz[0])}_${Math.round(item.corridor.horiz[1])}`;
+      const list = corridorGroups.get(k) || [];
+      list.push(item);
+      corridorGroups.set(k, list);
+    } else if (item.corridor.vert) {
+      const k = `V::${Math.round(item.corridor.vert[0])}_${Math.round(item.corridor.vert[1])}`;
+      const list = corridorGroups.get(k) || [];
+      list.push(item);
+      corridorGroups.set(k, list);
+    }
+  }
+  corridorGroups.forEach((items) => {
+    if (items.length <= 1) return;
+    items.forEach((it, i) => {
+      it.corridorOffset = (i - (items.length - 1) / 2) * 14;
+    });
+  });
+
+  // Pass 2: Route paths and place labels
+  const edges              = [];
+  const placedLabelBoxes         
+              
+              
+                  
+                   
+     = [];
+
+  for (const item of prepared) {
+    const {
+      conn,
+      id,
+      fromParsed,
+      toParsed,
+      fromBox,
+      toBox,
+      fromOwnerId,
+      toOwnerId,
+      isExternal,
+      isSelfLoop,
+      isFromSubAnchor,
+      isToSubAnchor,
+      ownerFromBox,
+      ownerToBox,
+      outerFromBox,
+      outerToBox,
+      corridor,
+      fromSide,
+      toSide,
+      fromRatio,
+      toRatio,
+      fromMultiplexed,
+      toMultiplexed,
+      corridorOffset,
+    } = item;
 
     const p1 = getProjectedPortPoint(
       fromBox,
       ownerFromBox,
       fromSide,
-      fromParsed.ratio,
+      fromRatio,
       isExternal
     );
     const p2 = getProjectedPortPoint(
       toBox,
       ownerToBox,
       toSide,
-      toParsed.ratio,
+      toRatio,
       isExternal
     );
 
-    alignFacingPorts(
-      p1,
-      p2,
-      fromBox,
-      toBox,
-      fromSide,
-      toSide,
-      fromParsed.explicitRatio,
-      toParsed.explicitRatio,
-      isFromSubAnchor,
-      isToSubAnchor
-    );
+    if (!isSelfLoop) {
+      alignFacingPorts(
+        p1,
+        p2,
+        fromBox,
+        toBox,
+        fromSide,
+        toSide,
+        fromParsed.explicitRatio || fromMultiplexed,
+        toParsed.explicitRatio || toMultiplexed,
+        isFromSubAnchor,
+        isToSubAnchor
+      );
+    }
 
     const routing = conn.routing || "orthogonal";
     const cornerRadius = conn.cornerRadius ?? 8;
     const stub = conn.stub ?? 20;
 
+    const { paddedObstacles, rawObstacles } = buildEdgeObstacles(
+      fromOwnerId,
+      toOwnerId,
+      ownerFromBox,
+      ownerToBox,
+      anchorRegistry
+    );
+
     let pathD = "";
     let points                     = [p1, p2];
     let bezierControls                                              = null;
+    let usedObstacleDetour = false;
 
-    if (routing === "straight") {
+    if (isSelfLoop) {
+      points = buildSelfLoopWaypoints(
+        p1,
+        fromSide,
+        p2,
+        toSide,
+        ownerFromBox,
+        stub
+      );
+      pathD = buildRoundedPolylinePath(points, cornerRadius);
+    } else if (routing === "straight") {
       pathD = `M ${Math.round(p1[0])} ${Math.round(p1[1])} L ${Math.round(p2[0])} ${Math.round(p2[1])}`;
     } else if (routing === "curved") {
-      if (Math.abs(p1[0] - p2[0]) <= 1 || Math.abs(p1[1] - p2[1]) <= 1) {
-        // Endpoints are already aligned horizontally or vertically: draw a crisp straight line
+      if (
+        (Math.abs(p1[0] - p2[0]) <= 1 || Math.abs(p1[1] - p2[1]) <= 1) &&
+        !polylineHitsObstacles([p1, p2], paddedObstacles)
+      ) {
         pathD = `M ${Math.round(p1[0])} ${Math.round(p1[1])} L ${Math.round(p2[0])} ${Math.round(p2[1])}`;
         points = [p1, p2];
       } else {
@@ -4049,8 +4910,7 @@ export function routeConnections(
             ? dy
             : Math.hypot(dx, dy);
         const controlLen =
-          conn.curveOffset ??
-          Math.max(28, Math.min(120, primarySpan * 0.45));
+          conn.curveOffset ?? Math.max(28, Math.min(120, primarySpan * 0.45));
         const c1                   = [
           p1[0] + n1x * controlLen,
           p1[1] + n1y * controlLen,
@@ -4078,8 +4938,26 @@ export function routeConnections(
         corridor,
         outerFromBox,
         outerToBox,
-        stub
+        stub,
+        corridorOffset
       );
+
+      if (polylineHitsObstacles(points, paddedObstacles)) {
+        const detour = findObstacleFreeOrthogonalPath(
+          p1,
+          fromSide,
+          p2,
+          toSide,
+          rawObstacles,
+          paddedObstacles,
+          stub
+        );
+        if (detour && detour.length >= 2) {
+          points = detour;
+          usedObstacleDetour = true;
+        }
+      }
+
       pathD = buildRoundedPolylinePath(points, cornerRadius);
     }
 
@@ -4103,7 +4981,7 @@ export function routeConnections(
         ? "2 4"
         : undefined;
 
-    // Corridor-aware label placement & collision resolution
+    // Corridor & obstacle-aware label placement
     let labelBox                       ;
     if (conn.label) {
       const labelW =
@@ -4122,7 +5000,11 @@ export function routeConnections(
 
       let anchorPt                  ;
 
-      if (bezierControls) {
+      if (isSelfLoop) {
+        anchorPt = findLongestClearSegmentMidpoint(points, paddedObstacles);
+      } else if (usedObstacleDetour && !hasExplicitPos) {
+        anchorPt = findLongestClearSegmentMidpoint(points, paddedObstacles);
+      } else if (bezierControls) {
         const [c1, c2] = bezierControls;
         if (
           corridor.horiz &&
@@ -4182,7 +5064,6 @@ export function routeConnections(
           anchorPt = [p1[0] + dx * posRatio, p1[1] + dy * posRatio];
         }
       } else if (points.length === 3 && !hasExplicitPos) {
-        // L-bend: place on the midpoint of the longer straight leg rather than on the 90° corner vertex
         const len1 = Math.hypot(
           points[1][0] - points[0][0],
           points[1][1] - points[0][1]
@@ -4202,7 +5083,6 @@ export function routeConnections(
                 (points[1][1] + points[2][1]) / 2,
               ];
       } else if (points.length === 4 && !hasExplicitPos) {
-        // Z-bend: place at the midpoint of the central corridor segment
         anchorPt = [
           (points[1][0] + points[2][0]) / 2,
           (points[1][1] + points[2][1]) / 2,
@@ -4227,8 +5107,7 @@ export function routeConnections(
       if (conn.labelOffset) {
         lx += conn.labelOffset[0];
         ly += conn.labelOffset[1];
-      } else {
-        // Clamp label inside open corridor so it stays clear of container borders and arrowheads
+      } else if (!isSelfLoop && !usedObstacleDetour) {
         if (
           corridor.horiz &&
           (fromSide === "left" || fromSide === "right") &&
@@ -4316,7 +5195,7 @@ export function routeConnections(
         durationSec,
       },
     });
-  });
+  }
 
   return edges;
 }
@@ -4410,10 +5289,66 @@ export function buildFocusAdjacency(
 // --- src/compiler/index.ts ---
 /**
  * Unified Compiler Entry Point: IllustrationSpec + Theme -> Normalized SceneGraph
+ * Includes Dynamic ViewBox Envelope Expansion so detour edges, self-loops, and outer labels
+ * are never clipped by the SVG canvas boundary.
  */
 
 
 
+
+function translateNodeTree(
+  nodes             ,
+  dx        ,
+  dy        
+)       {
+  for (const n of nodes) {
+    n.x += dx;
+    n.y += dy;
+    if (n.children.length > 0) {
+      translateNodeTree(n.children, dx, dy);
+    }
+  }
+}
+
+function translateAnchorRegistry(
+  registry                             ,
+  dx        ,
+  dy        
+)       {
+  for (const box of Object.values(registry)) {
+    box.x += dx;
+    box.y += dy;
+  }
+}
+
+function measureEdgesEnvelope(edges             )   
+               
+               
+               
+               
+  {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+
+  for (const edge of edges) {
+    for (const pt of edge.points) {
+      minX = Math.min(minX, pt[0]);
+      minY = Math.min(minY, pt[1]);
+      maxX = Math.max(maxX, pt[0]);
+      maxY = Math.max(maxY, pt[1]);
+    }
+    if (edge.labelBox) {
+      minX = Math.min(minX, edge.labelBox.x);
+      minY = Math.min(minY, edge.labelBox.y);
+      maxX = Math.max(maxX, edge.labelBox.x + edge.labelBox.width);
+      maxY = Math.max(maxY, edge.labelBox.y + edge.labelBox.height);
+    }
+  }
+
+  return { minX, minY, maxX, maxY };
+}
 
 export function compileIllustration(
   spec                  ,
@@ -4421,24 +5356,64 @@ export function compileIllustration(
   options                = {},
   measurer = new TextMeasurer()
 )             {
+  const compact = options.compactViewport ?? false;
   const layoutSolver = new HybridLayoutSolver(measurer, theme);
   const layoutResult = layoutSolver.solve(spec, options);
 
-  const edges = routeConnections(
+  let edges = routeConnections(
     spec.connections,
     layoutResult.anchorRegistry,
     theme,
     measurer,
-    options.compactViewport ?? false
+    compact
   );
+
+  let finalWidth = layoutResult.width;
+  let finalHeight = layoutResult.height;
+
+  if (edges.length > 0) {
+    const minMargin = 20;
+    let env = measureEdgesEnvelope(edges);
+
+    const shiftX =
+      Number.isFinite(env.minX) && env.minX < minMargin
+        ? Math.ceil(minMargin - env.minX)
+        : 0;
+    const shiftY =
+      Number.isFinite(env.minY) && env.minY < minMargin
+        ? Math.ceil(minMargin - env.minY)
+        : 0;
+
+    if (shiftX > 0 || shiftY > 0) {
+      translateNodeTree(layoutResult.nodes, shiftX, shiftY);
+      translateAnchorRegistry(layoutResult.anchorRegistry, shiftX, shiftY);
+      finalWidth += shiftX;
+      finalHeight += shiftY;
+      edges = routeConnections(
+        spec.connections,
+        layoutResult.anchorRegistry,
+        theme,
+        measurer,
+        compact
+      );
+      env = measureEdgesEnvelope(edges);
+    }
+
+    if (typeof spec.canvas?.width !== "number" && Number.isFinite(env.maxX)) {
+      finalWidth = Math.max(finalWidth, Math.ceil(env.maxX + minMargin));
+    }
+    if (typeof spec.canvas?.height !== "number" && Number.isFinite(env.maxY)) {
+      finalHeight = Math.max(finalHeight, Math.ceil(env.maxY + minMargin));
+    }
+  }
 
   const adjacency = buildFocusAdjacency(layoutResult.nodes, edges);
 
   return {
     title: spec.title,
-    width: layoutResult.width,
-    height: layoutResult.height,
-    viewBox: [0, 0, layoutResult.width, layoutResult.height],
+    width: finalWidth,
+    height: finalHeight,
+    viewBox: [0, 0, finalWidth, finalHeight],
     background: spec.canvas?.background || "dots",
     preset: theme.geometry.preset,
     theme,
