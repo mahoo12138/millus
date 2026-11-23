@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 128" width="160" height="128" fill="none">
+  <defs>
+    <mask id="millus-node-cutout">
+      <rect width="160" height="128" fill="#ffffff" />
+      <!-- Cut out interiors of all 5 rounded squares so connectors stop cleanly at node borders -->
+      <rect x="18" y="14" width="32" height="32" rx="7" fill="#000000" />
+      <rect x="18" y="82" width="32" height="32" rx="7" fill="#000000" />
+      <rect x="110" y="14" width="32" height="32" rx="7" fill="#000000" />
+      <rect x="110" y="82" width="32" height="32" rx="7" fill="#000000" />
+      <rect x="66" y="50" width="28" height="28" rx="7" fill="#000000" />
+    </mask>
+  </defs>
+
+  <!-- Connector edges -->
+  <g stroke="#1D6FF2" stroke-width="4.5" stroke-linecap="round" mask="url(#millus-node-cutout)">
+    <line x1="34" y1="30" x2="34" y2="98" />
+    <line x1="126" y1="30" x2="126" y2="98" />
+    <line x1="34" y1="30" x2="80" y2="64" />
+    <line x1="34" y1="98" x2="80" y2="64" />
+    <line x1="126" y1="30" x2="80" y2="64" />
+    <line x1="126" y1="98" x2="80" y2="64" />
+  </g>
+
+  <!-- Four outer graph nodes -->
+  <g stroke="#1D6FF2" stroke-width="4.5">
+    <rect x="18" y="14" width="32" height="32" rx="7" />
+    <rect x="18" y="82" width="32" height="32" rx="7" />
+    <rect x="110" y="14" width="32" height="32" rx="7" />
+    <rect x="110" y="82" width="32" height="32" rx="7" />
+  </g>
+
+  <!-- Central AI sparkle node -->
+  <rect x="66" y="50" width="28" height="28" rx="7" stroke="#22B8FF" stroke-width="4.5" />
+  <path
+    d="M 80 55.5 Q 81.5 62.5 88.5 64 Q 81.5 65.5 80 72.5 Q 78.5 65.5 71.5 64 Q 78.5 62.5 80 55.5 Z"
+    fill="#22B8FF"
+  />
+</svg>
