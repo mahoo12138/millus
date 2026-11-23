@@ -1,18 +1,28 @@
 /**
  * Remark / MDX Build-Time Plugin
- * Transforms ```illustration JSON/YAML code blocks into <ai-illustration> custom elements.
+ * Transforms ```illustration JSON/YAML code blocks into <ai-illustration> custom elements,
+ * with built-in YAML/Loose-JSON parsing and SSG pre-rendered inline SVG fallback for Zero-CLS & SEO/RSS.
  */
 
-import { validateIllustrationSpec } from "../schema/spec.ts";
+import {
+  parseIllustrationSpecText,
+  validateIllustrationSpec,
+  type PresetStyle,
+} from "../schema/spec.ts";
+import { compileIllustration } from "../compiler/index.ts";
+import { resolveThemeTokens } from "../runtime/theme-observer.ts";
+import { renderSceneGraphToSvgString } from "../runtime/svg-dom-renderer.ts";
 
 export interface RemarkAiIllustrationOptions {
   /** Custom element tag name, default "ai-illustration" */
   tagName?: string;
-  /** Default preset: "clean" | "sketch" */
-  defaultPreset?: "clean" | "sketch";
+  /** Default preset: "clean" | "sketch" | "blueprint" */
+  defaultPreset?: PresetStyle;
   /** Default responsive mode: "reflow" | "scale" */
   responsive?: "reflow" | "scale";
-  /** Optional custom YAML parser (if blog uses YAML inside ```illustration blocks) */
+  /** Pre-render static inline SVG fallback at build time for Zero-CLS, SEO, and RSS readers (default: true) */
+  prerenderSvg?: boolean;
+  /** Optional custom YAML parser override */
   parseYaml?: (raw: string) => unknown;
 }
 
@@ -29,6 +39,7 @@ export function remarkAiIllustration(
 ) {
   const tagName = options.tagName || "ai-illustration";
   const responsive = options.responsive || "reflow";
+  const prerenderSvg = options.prerenderSvg ?? true;
 
   return function transformer(tree: MdastNode): void {
     const walk = (node: MdastNode) => {
@@ -43,12 +54,10 @@ export function remarkAiIllustration(
           let parsed: unknown;
 
           try {
-            if (raw.startsWith("{")) {
-              parsed = JSON.parse(raw);
-            } else if (options.parseYaml) {
+            if (!raw.startsWith("{") && options.parseYaml) {
               parsed = options.parseYaml(raw);
             } else {
-              parsed = JSON.parse(raw);
+              parsed = parseIllustrationSpecText(raw);
             }
           } catch (err) {
             throw new Error(
@@ -57,7 +66,7 @@ export function remarkAiIllustration(
           }
 
           const check = validateIllustrationSpec(parsed);
-          if (!check.valid) {
+          if (!check.valid || !check.spec) {
             throw new Error(
               `[remark-ai-illustration] Invalid IllustrationSpec:\n${check.errors.join("\n")}`
             );
@@ -71,9 +80,23 @@ export function remarkAiIllustration(
             ? ` preset="${options.defaultPreset}"`
             : "";
 
+          let ssrFallbackHtml = "";
+          if (prerenderSvg) {
+            const ssrTheme = resolveThemeTokens(
+              null,
+              options.defaultPreset || check.spec.style?.preset,
+              check.spec.style?.roughness
+            );
+            const ssrScene = compileIllustration(check.spec, ssrTheme, {
+              compactViewport: false,
+            });
+            const ssrSvg = renderSceneGraphToSvgString(ssrScene);
+            ssrFallbackHtml = `<div class="ai-ill-ssr-fallback">${ssrSvg}</div>`;
+          }
+
           node.children[i] = {
             type: "html",
-            value: `<${tagName}${presetAttr} responsive="${responsive}"><script type="application/json">${serialized}</script></${tagName}>`,
+            value: `<${tagName}${presetAttr} responsive="${responsive}"><script type="application/json">${serialized}</script>${ssrFallbackHtml}</${tagName}>`,
           };
         } else {
           walk(child);

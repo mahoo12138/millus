@@ -302,7 +302,7 @@
   <div class="workspace">
     <aside class="editor-pane">
       <div class="pane-header">
-        <span>AI Illustration JSON Spec (实时编辑)</span>
+        <span>AI Illustration JSON / YAML Spec (实时编辑)</span>
         <span id="compile-status" style="color: var(--blog-success);">● 实时同步</span>
       </div>
       <textarea id="spec-editor" spellcheck="false"></textarea>
@@ -329,7 +329,11 @@
 
   <script type="module">
     import "../dist/millus.bundle.js";
-    import { AI_ILLUSTRATION_SYSTEM_PROMPT } from "../dist/millus.bundle.js";
+    import {
+      AI_ILLUSTRATION_SYSTEM_PROMPT,
+      parseIllustrationSpecText,
+      validateIllustrationSpec
+    } from "../dist/millus.bundle.js";
 
     const EXAMPLES = {
       pipeline: {
@@ -797,12 +801,18 @@
 
     editorEl.addEventListener("input", () => {
       try {
-        const parsed = JSON.parse(editorEl.value);
+        const parsed = parseIllustrationSpecText(editorEl.value);
+        const check = validateIllustrationSpec(parsed);
         illEl.spec = parsed;
-        statusEl.textContent = "● 编译通过";
-        statusEl.style.color = "var(--blog-success)";
+        if (check.valid) {
+          statusEl.textContent = "● 编译通过 (JSON/YAML)";
+          statusEl.style.color = "var(--blog-success)";
+        } else {
+          statusEl.textContent = `⚠ ${check.errors[0]}`;
+          statusEl.style.color = "var(--blog-warning)";
+        }
       } catch (e) {
-        statusEl.textContent = "⚠ JSON 语法错误";
+        statusEl.textContent = "⚠ 语法解析错误";
         statusEl.style.color = "var(--blog-danger)";
       }
     });

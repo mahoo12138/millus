@@ -9,7 +9,10 @@ import type {
   PresetStyle,
   SceneGraph,
 } from "../schema/spec.ts";
-import { validateIllustrationSpec } from "../schema/spec.ts";
+import {
+  parseIllustrationSpecText,
+  validateIllustrationSpec,
+} from "../schema/spec.ts";
 import { compileIllustration } from "../compiler/index.ts";
 import { resolveThemeTokens, ThemeObserver } from "./theme-observer.ts";
 import { TextMeasurer } from "./text-measurer.ts";
@@ -136,6 +139,7 @@ export class AiIllustrationElement extends BaseHTMLElement {
 
   private shadow: ShadowRoot;
   private parsedSpec: IllustrationSpec | null = null;
+  private parseError: string | null = null;
   private currentScene: SceneGraph | null = null;
   private themeObserver?: ThemeObserver;
   private resizeObserver?: ResizeObserver;
@@ -158,6 +162,7 @@ export class AiIllustrationElement extends BaseHTMLElement {
       this.parseSpecString(val);
     } else {
       this.parsedSpec = val;
+      this.parseError = null;
     }
     this.render();
   }
@@ -216,30 +221,39 @@ export class AiIllustrationElement extends BaseHTMLElement {
       return;
     }
 
-    const scriptEl = this.querySelector('script[type="application/json"]');
+    const scriptEl = this.querySelector(
+      'script[type="application/json"], script[type="application/yaml"]'
+    );
     if (scriptEl && scriptEl.textContent) {
       this.parseSpecString(scriptEl.textContent);
       return;
     }
 
     const rawText = this.textContent?.trim();
-    if (rawText && rawText.startsWith("{")) {
+    if (rawText) {
       this.parseSpecString(rawText);
     }
   }
 
   private parseSpecString(raw: string): void {
     try {
-      const obj = JSON.parse(raw);
-      this.parsedSpec = obj;
-    } catch {
+      const obj = parseIllustrationSpecText(raw);
+      this.parsedSpec = obj as IllustrationSpec;
+      this.parseError = null;
+    } catch (err) {
       this.parsedSpec = null;
+      this.parseError = (err as Error).message;
     }
   }
 
   public render(): void {
-    if (!this.parsedSpec) {
+    if (!this.parsedSpec && !this.parseError) {
       this.loadInitialSpecFromDom();
+    }
+    if (this.parseError) {
+      this.shadow.innerHTML = `<style>${COMPONENT_STYLES}</style>
+        <div class="ai-ill-error">Spec Parse Error:\n${this.parseError}</div>`;
+      return;
     }
     if (!this.parsedSpec) return;
 

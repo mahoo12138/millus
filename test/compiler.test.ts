@@ -7,6 +7,8 @@ import assert from "node:assert/strict";
 import {
   compileIllustration,
   parseColorToRgb,
+  parseIllustrationSpecText,
+  validateIllustrationSpec,
   resolveThemeTokens,
   renderSceneGraphToSvgString,
   remarkAiIllustration,
@@ -566,4 +568,99 @@ assert.ok(
 const p1Svg = renderSceneGraphToSvgString(p1Scene);
 assert.ok(p1Svg.includes("RocksDB") && p1Svg.includes("0xCAFE"));
 
-console.log("✅ All compiler, layout, sub-anchor, reflow, sketch, remark, P0, and P1 tests passed!");
+// 12. Test P2: Loose JSON Recovery, Built-in YAML Subset Parser, Semantic Fuzzy Validator & Remark SSG SVG
+const looseJsonSpecText = `
+\`\`\`illustration
+{
+  // LLM comment and unquoted keys with trailing commas
+  title: 'Loose JSON Test',
+  elements: [
+    { id: 'api_node', type: 'card', title: 'API Gateway', },
+    { id: 'db_node', type: 'cylinder', label: 'Postgres', place: { rightOf: 'api_node', gap: 48, }, },
+  ],
+  connections: [
+    { from: 'api_node@right', to: 'db_node@left', label: 'SQL Query', },
+  ],
+}
+\`\`\`
+`;
+const parsedLoose = parseIllustrationSpecText(looseJsonSpecText);
+const checkLoose = validateIllustrationSpec(parsedLoose);
+assert.ok(checkLoose.valid, "Loose JSON with comments, single quotes, unquoted keys, and trailing commas must parse and validate");
+
+const yamlSpecText = `
+title: YAML Native Pipeline
+canvas:
+  background: grid
+  padding: 32
+elements:
+  - id: producer_code
+    type: code-block
+    title: producer.rs
+    highlightLines: [1, 2]
+    code: |
+      fn send_batch() {
+        ring.push(0x42);
+      }
+  - id: ring_q
+    type: queue
+    label: Ring Queue
+    place:
+      rightOf: producer_code
+      gap: 64
+connections:
+  - from: producer_code.line_2@right
+    to: ring_q@left
+    label: Zero-Copy Push
+`;
+const parsedYaml = parseIllustrationSpecText(yamlSpecText);
+const checkYaml = validateIllustrationSpec(parsedYaml);
+assert.ok(checkYaml.valid && checkYaml.spec, "Built-in YAML parser must parse nested objects, sequences, inline arrays, and block scalars");
+const yamlScene = compileIllustration(checkYaml.spec!, lightTheme);
+assert.equal(yamlScene.nodes.length, 2);
+assert.equal(yamlScene.edges.length, 1);
+
+// Fuzzy ID suggestion on typo in connection endpoint and place reference
+const typoCheck = validateIllustrationSpec({
+  elements: [
+    { id: "auth_service", type: "card", title: "Auth" },
+    {
+      id: "order_service",
+      type: "card",
+      title: "Order",
+      place: { rightOf: "auth_servce" },
+    },
+  ],
+  connections: [{ from: "auth_service@right", to: "ordr_service@left" }],
+});
+assert.equal(typoCheck.valid, false);
+assert.ok(
+  typoCheck.errors.some((e) => e.includes('Did you mean "auth_service"?')),
+  "Validator must suggest closest sibling ID on place typo"
+);
+assert.ok(
+  typoCheck.errors.some((e) => e.includes('Did you mean "order_service"?')),
+  "Validator must suggest closest element ID on connection endpoint typo"
+);
+
+// Remark plugin with YAML input and SSG pre-rendered inline SVG fallback
+const yamlMdast = {
+  type: "root",
+  children: [
+    {
+      type: "code",
+      lang: "illustration",
+      value: yamlSpecText,
+    },
+  ],
+};
+const ssrPlugin = remarkAiIllustration({ defaultPreset: "clean" });
+ssrPlugin(yamlMdast);
+assert.equal(yamlMdast.children[0].type, "html");
+assert.ok(
+  yamlMdast.children[0].value?.includes("ai-ill-ssr-fallback") &&
+    yamlMdast.children[0].value?.includes("<svg"),
+  "Remark plugin must parse YAML natively and pre-render static SSG SVG fallback"
+);
+
+console.log("✅ All compiler, layout, sub-anchor, reflow, sketch, remark, P0, P1, and P2 tests passed!");

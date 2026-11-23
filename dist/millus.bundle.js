@@ -461,8 +461,475 @@
                                                  
  
 
+// ============================================================================
+// Zero-Dependency Loose JSON & YAML Spec Parser + Semantic Validator
+// ============================================================================
+
+const VALID_ELEMENT_TYPES = new Set        ([
+  "rect",
+  "diamond",
+  "circle",
+  "ellipse",
+  "cylinder",
+  "queue",
+  "polygon",
+  "path",
+  "text",
+  "icon",
+  "group",
+  "window",
+  "card",
+  "code-block",
+  "terminal",
+  "table",
+  "badge",
+  "callout",
+  "bitfield",
+  "sequence",
+]);
+
 /**
- * Lightweight runtime validator with descriptive errors for LLM self-repair
+ * Normalizes loose LLM-generated JSON (strips // and /* comments, single quotes,
+ * unquoted object keys, and trailing commas) into strict JSON.
+ */
+export function normalizeLooseJson(raw        )         {
+  let out = "";
+  let i = 0;
+  const n = raw.length;
+  let inDouble = false;
+  let inSingle = false;
+
+  while (i < n) {
+    const ch = raw[i];
+    const next = raw[i + 1];
+
+    if (inDouble) {
+      if (ch === "\\" && i + 1 < n) {
+        out += ch + raw[i + 1];
+        i += 2;
+        continue;
+      }
+      if (ch === '"') {
+        inDouble = false;
+        out += ch;
+        i++;
+        continue;
+      }
+      if (ch === "\n") {
+        out += "\\n";
+        i++;
+        continue;
+      }
+      if (ch === "\r") {
+        i++;
+        continue;
+      }
+      out += ch;
+      i++;
+      continue;
+    }
+
+    if (inSingle) {
+      if (ch === "\\" && i + 1 < n) {
+        const esc = raw[i + 1];
+        if (esc === "'") {
+          out += "'";
+        } else {
+          out += "\\" + esc;
+        }
+        i += 2;
+        continue;
+      }
+      if (ch === "'") {
+        inSingle = false;
+        out += '"';
+        i++;
+        continue;
+      }
+      if (ch === '"') {
+        out += '\\"';
+        i++;
+        continue;
+      }
+      if (ch === "\n") {
+        out += "\\n";
+        i++;
+        continue;
+      }
+      if (ch === "\r") {
+        i++;
+        continue;
+      }
+      out += ch;
+      i++;
+      continue;
+    }
+
+    // Outside strings: check comments
+    if (ch === "/" && next === "/") {
+      i += 2;
+      while (i < n && raw[i] !== "\n") i++;
+      continue;
+    }
+    if (ch === "/" && next === "*") {
+      i += 2;
+      while (i < n && !(raw[i] === "*" && raw[i + 1] === "/")) i++;
+      i += 2;
+      continue;
+    }
+
+    if (ch === '"') {
+      inDouble = true;
+      out += ch;
+      i++;
+      continue;
+    }
+    if (ch === "'") {
+      inSingle = true;
+      out += '"';
+      i++;
+      continue;
+    }
+
+    out += ch;
+    i++;
+  }
+
+  // Quote unquoted object keys: { key: ... or , key: ...
+  const withQuotedKeys = out.replace(
+    /([{,]\s*)([A-Za-z_][A-Za-z0-9_-]*)(\s*:)/g,
+    '$1"$2"$3'
+  );
+
+  // Strip trailing commas before } or ]
+  return withQuotedKeys.replace(/,(\s*[}\]])/g, "$1");
+}
+
+function stripInlineYamlComment(raw        )         {
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if (ch === "\\" && (inSingle || inDouble)) {
+      i++;
+      continue;
+    }
+    if (ch === '"' && !inSingle) inDouble = !inDouble;
+    else if (ch === "'" && !inDouble) inSingle = !inSingle;
+    else if (ch === "#" && !inSingle && !inDouble) {
+      if (i === 0 || /\s/.test(raw[i - 1])) {
+        return raw.slice(0, i).trimEnd();
+      }
+    }
+  }
+  return raw.trimEnd();
+}
+
+function parseYamlScalar(raw        )          {
+  const s = raw.trim();
+  if (!s) return "";
+  if (s === "true") return true;
+  if (s === "false") return false;
+  if (s === "null" || s === "~") return null;
+  if (/^-?\d+(?:\.\d+)?$/.test(s)) {
+    return Number(s);
+  }
+  if (
+    (s.startsWith("[") && s.endsWith("]")) ||
+    (s.startsWith("{") && s.endsWith("}"))
+  ) {
+    try {
+      return JSON.parse(normalizeLooseJson(s));
+    } catch {
+      // Fallback to string if not valid flow collection
+    }
+  }
+  if (
+    (s.startsWith('"') && s.endsWith('"')) ||
+    (s.startsWith("'") && s.endsWith("'"))
+  ) {
+    try {
+      return JSON.parse(normalizeLooseJson(s));
+    } catch {
+      return s.slice(1, -1);
+    }
+  }
+  return s;
+}
+
+function splitYamlKeyValue(text        )                          {
+  let inSingle = false;
+  let inDouble = false;
+  let bracketDepth = 0;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === "\\" && (inSingle || inDouble)) {
+      i++;
+      continue;
+    }
+    if (ch === '"' && !inSingle) inDouble = !inDouble;
+    else if (ch === "'" && !inDouble) inSingle = !inSingle;
+    else if (!inSingle && !inDouble) {
+      if (ch === "[" || ch === "{") bracketDepth++;
+      else if (ch === "]" || ch === "}") bracketDepth = Math.max(0, bracketDepth - 1);
+      else if (
+        ch === ":" &&
+        bracketDepth === 0 &&
+        (i + 1 === text.length || /\s/.test(text[i + 1]))
+      ) {
+        const key = text
+          .slice(0, i)
+          .trim()
+          .replace(/^['"]|['"]$/g, "");
+        const val = text.slice(i + 1).trim();
+        return [key, val];
+      }
+    }
+  }
+  return null;
+}
+
+                    
+                 
+               
+                  
+ 
+
+function parseYamlSubset(raw        )          {
+  const rawLines = raw.split(/\r?\n/);
+  const lines             = [];
+
+  for (let i = 0; i < rawLines.length; i++) {
+    const line = rawLines[i];
+    const trimmedStart = line.trimStart();
+    if (!trimmedStart || trimmedStart.startsWith("#")) {
+      lines.push({ indent: -1, text: "", rawText: line });
+      continue;
+    }
+    const indent = line.length - trimmedStart.length;
+    const cleaned = stripInlineYamlComment(trimmedStart);
+    lines.push({ indent, text: cleaned, rawText: line });
+  }
+
+  const nextNonEmpty = (startIdx        )         => {
+    let idx = startIdx;
+    while (idx < lines.length && lines[idx].indent === -1) idx++;
+    return idx;
+  };
+
+  const parseBlockScalar = (
+    startIdx        ,
+    parentIndent        ,
+    folded         
+  )                                     => {
+    const collected           = [];
+    let idx = startIdx;
+    let blockIndent = -1;
+
+    while (idx < lines.length) {
+      const l = lines[idx];
+      if (l.indent === -1) {
+        if (blockIndent !== -1) collected.push("");
+        idx++;
+        continue;
+      }
+      if (l.indent <= parentIndent) break;
+      if (blockIndent === -1) blockIndent = l.indent;
+      collected.push(l.rawText.slice(Math.min(l.rawText.length, blockIndent)));
+      idx++;
+    }
+
+    while (collected.length > 0 && collected[collected.length - 1] === "") {
+      collected.pop();
+    }
+    return {
+      value: folded ? collected.join(" ") : collected.join("\n"),
+      nextIdx: idx,
+    };
+  };
+
+  const parseNode = (
+    startIdx        ,
+    minIndent        
+  )                                      => {
+    const firstIdx = nextNonEmpty(startIdx);
+    if (firstIdx >= lines.length || lines[firstIdx].indent < minIndent) {
+      return { value: {}, nextIdx: firstIdx };
+    }
+
+    const baseIndent = lines[firstIdx].indent;
+    const isSeq =
+      lines[firstIdx].text === "-" || lines[firstIdx].text.startsWith("- ");
+
+    if (isSeq) {
+      const arr            = [];
+      let idx = firstIdx;
+
+      while (idx < lines.length) {
+        idx = nextNonEmpty(idx);
+        if (idx >= lines.length || lines[idx].indent < baseIndent) break;
+        if (lines[idx].indent > baseIndent) break;
+        const l = lines[idx];
+        if (!(l.text === "-" || l.text.startsWith("- "))) break;
+
+        const afterDash = l.text.slice(1).trim();
+        if (!afterDash) {
+          const sub = parseNode(idx + 1, baseIndent + 1);
+          arr.push(sub.value);
+          idx = sub.nextIdx;
+          continue;
+        }
+
+        const kv = splitYamlKeyValue(afterDash);
+        if (kv) {
+          const itemObj                          = {};
+          const [k, v] = kv;
+          idx++;
+          if (v === "|" || v === "|-" || v === ">" || v === ">-") {
+            const blk = parseBlockScalar(idx, baseIndent + 1, v.startsWith(">"));
+            itemObj[k] = blk.value;
+            idx = blk.nextIdx;
+          } else if (v === "") {
+            const sub = parseNode(idx, baseIndent + 2);
+            itemObj[k] = sub.value;
+            idx = sub.nextIdx;
+          } else {
+            itemObj[k] = parseYamlScalar(v);
+          }
+
+          // Check if additional properties follow at deeper indentation
+          const nextIdx = nextNonEmpty(idx);
+          if (nextIdx < lines.length && lines[nextIdx].indent > baseIndent) {
+            const rest = parseObjectProps(
+              nextIdx,
+              lines[nextIdx].indent,
+              itemObj
+            );
+            idx = rest;
+          }
+          arr.push(itemObj);
+        } else {
+          arr.push(parseYamlScalar(afterDash));
+          idx++;
+        }
+      }
+
+      return { value: arr, nextIdx: idx };
+    }
+
+    const obj                          = {};
+    const nextIdx = parseObjectProps(firstIdx, baseIndent, obj);
+    return { value: obj, nextIdx };
+  };
+
+  const parseObjectProps = (
+    startIdx        ,
+    baseIndent        ,
+    target                         
+  )         => {
+    let idx = startIdx;
+    while (idx < lines.length) {
+      idx = nextNonEmpty(idx);
+      if (idx >= lines.length || lines[idx].indent < baseIndent) break;
+      if (lines[idx].indent > baseIndent) break;
+      const l = lines[idx];
+      if (l.text === "-" || l.text.startsWith("- ")) break;
+
+      const kv = splitYamlKeyValue(l.text);
+      if (!kv) {
+        idx++;
+        continue;
+      }
+
+      const [key, val] = kv;
+      idx++;
+      if (val === "|" || val === "|-" || val === ">" || val === ">-") {
+        const blk = parseBlockScalar(idx, baseIndent, val.startsWith(">"));
+        target[key] = blk.value;
+        idx = blk.nextIdx;
+      } else if (val === "") {
+        const sub = parseNode(idx, baseIndent + 1);
+        target[key] = sub.value;
+        idx = sub.nextIdx;
+      } else {
+        target[key] = parseYamlScalar(val);
+      }
+    }
+    return idx;
+  };
+
+  return parseNode(0, 0).value;
+}
+
+/**
+ * Parses an IllustrationSpec string in strict JSON, loose JSON (with comments / trailing commas /
+ * single quotes / unquoted keys), or YAML format.
+ */
+export function parseIllustrationSpecText(raw        )          {
+  let trimmed = (raw || "").trim();
+  if (!trimmed) {
+    throw new Error("Empty illustration spec.");
+  }
+
+  // Strip surrounding markdown code fences if present
+  if (trimmed.startsWith("```")) {
+    const lines = trimmed.split(/\r?\n/);
+    if (lines.length >= 2 && lines[lines.length - 1].trim().startsWith("```")) {
+      trimmed = lines.slice(1, -1).join("\n").trim();
+    }
+  }
+
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    try {
+      return JSON.parse(trimmed);
+    } catch {
+      return JSON.parse(normalizeLooseJson(trimmed));
+    }
+  }
+
+  return parseYamlSubset(trimmed);
+}
+
+function editDistance(a        , b        )         {
+  const m = a.length;
+  const n = b.length;
+  const dp             = Array.from({ length: m + 1 }, () =>
+    new Array        (n + 1).fill(0)
+  );
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1].toLowerCase() === b[j - 1].toLowerCase() ? 0 : 1;
+      dp[i][j] = Math.min(
+        dp[i - 1][j] + 1,
+        dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + cost
+      );
+    }
+  }
+  return dp[m][n];
+}
+
+function suggestClosestId(
+  target        ,
+  candidates                  
+)                     {
+  let best                    ;
+  let bestDist = Infinity;
+  for (const c of candidates) {
+    const d = editDistance(target, c);
+    if (d < bestDist && d <= Math.max(3, Math.ceil(target.length * 0.5))) {
+      bestDist = d;
+      best = c;
+    }
+  }
+  return best;
+}
+
+/**
+ * Runtime semantic validator with descriptive errors & fuzzy ID suggestions for LLM self-repair
  */
 export function validateIllustrationSpec(input         )   
                  
@@ -470,31 +937,157 @@ export function validateIllustrationSpec(input         )
                           
   {
   const errors           = [];
-  if (!input || typeof input !== "object") {
+  let parsedInput = input;
+
+  if (typeof input === "string") {
+    try {
+      parsedInput = parseIllustrationSpecText(input);
+    } catch (err) {
+      return {
+        valid: false,
+        errors: [`Failed to parse spec text: ${(err         ).message}`],
+      };
+    }
+  }
+
+  if (!parsedInput || typeof parsedInput !== "object") {
     return { valid: false, errors: ["Root spec must be a JSON/YAML object."] };
   }
-  const obj = input                           ;
-  if (!Array.isArray(obj.elements)) {
-    errors.push("Missing or invalid 'elements' array at root.");
-  } else {
-    obj.elements.forEach((el, idx) => {
+
+  const obj = parsedInput                           ;
+  const knownNodeIds = new Set        ();
+
+  const validateElementTree = (
+    elements           ,
+    pathPrefix        
+  )       => {
+    const siblingIds = new Set        ();
+
+    elements.forEach((el, idx) => {
+      const itemPath = `${pathPrefix}[${idx}]`;
       if (!el || typeof el !== "object") {
-        errors.push(`elements[${idx}] must be an object.`);
+        errors.push(`${itemPath} must be an object.`);
         return;
       }
       const typed = el                           ;
       if (typeof typed.type !== "string") {
-        errors.push(`elements[${idx}] is missing a 'type' property.`);
+        errors.push(`${itemPath} is missing a 'type' property.`);
+        return;
+      }
+      if (!VALID_ELEMENT_TYPES.has(typed.type)) {
+        errors.push(
+          `${itemPath} has unknown type "${typed.type}". Valid types: ${Array.from(VALID_ELEMENT_TYPES).join(", ")}.`
+        );
+      }
+      if (typeof typed.id === "string" && typed.id.trim()) {
+        const id = typed.id.trim();
+        if (knownNodeIds.has(id)) {
+          errors.push(`${itemPath} has duplicate element id "${id}".`);
+        }
+        knownNodeIds.add(id);
+        siblingIds.add(id);
+      }
+      if (Array.isArray(typed.children)) {
+        validateElementTree(typed.children, `${itemPath}.children`);
       }
     });
+
+    // Check sibling relative `place` references within this container
+    if (siblingIds.size > 0) {
+      elements.forEach((el, idx) => {
+        if (!el || typeof el !== "object") return;
+        const typed = el                           ;
+        const selfId = typeof typed.id === "string" ? typed.id.trim() : undefined;
+        const place = typed.place                                       ;
+        if (!place || typeof place !== "object") return;
+
+        for (const dirKey of ["rightOf", "leftOf", "below", "above"]         ) {
+          const refVal = place[dirKey];
+          if (typeof refVal === "string" && refVal.trim()) {
+            const refId = refVal.trim();
+            if (selfId && refId === selfId) {
+              errors.push(
+                `${pathPrefix}[${idx}].place.${dirKey} cannot reference itself ("${selfId}").`
+              );
+            } else if (!siblingIds.has(refId)) {
+              const suggestion = suggestClosestId(refId, siblingIds);
+              const hint = suggestion ? ` Did you mean "${suggestion}"?` : "";
+              errors.push(
+                `${pathPrefix}[${idx}].place.${dirKey} references unknown sibling id "${refId}".${hint}`
+              );
+            }
+          }
+        }
+      });
+    }
+  };
+
+  if (!Array.isArray(obj.elements)) {
+    errors.push("Missing or invalid 'elements' array at root.");
+  } else {
+    validateElementTree(obj.elements, "elements");
+
+    // Check callout target references
+    if (knownNodeIds.size > 0) {
+      obj.elements.forEach((el, idx) => {
+        if (!el || typeof el !== "object") return;
+        const typed = el                           ;
+        if (
+          typed.type === "callout" &&
+          typeof typed.target === "string" &&
+          typed.target.trim()
+        ) {
+          const baseTarget = typed.target.split("@")[0].split(".")[0].trim();
+          if (!knownNodeIds.has(baseTarget)) {
+            const suggestion = suggestClosestId(baseTarget, knownNodeIds);
+            const hint = suggestion ? ` Did you mean "${suggestion}"?` : "";
+            errors.push(
+              `elements[${idx}].target references unknown element id "${baseTarget}".${hint}`
+            );
+          }
+        }
+      });
+    }
   }
-  if (obj.connections !== undefined && !Array.isArray(obj.connections)) {
-    errors.push("'connections' must be an array when provided.");
+
+  if (obj.connections !== undefined) {
+    if (!Array.isArray(obj.connections)) {
+      errors.push("'connections' must be an array when provided.");
+    } else if (knownNodeIds.size > 0) {
+      obj.connections.forEach((conn, idx) => {
+        if (!conn || typeof conn !== "object") {
+          errors.push(`connections[${idx}] must be an object.`);
+          return;
+        }
+        const typed = conn                           ;
+        for (const endKey of ["from", "to"]         ) {
+          const rawEnd = typed[endKey];
+          if (typeof rawEnd !== "string" || !rawEnd.trim()) {
+            errors.push(
+              `connections[${idx}] is missing a valid '${endKey}' endpoint string.`
+            );
+            continue;
+          }
+          const baseId = rawEnd.split("@")[0].split(".")[0].trim();
+          if (!knownNodeIds.has(baseId)) {
+            const suggestion = suggestClosestId(baseId, knownNodeIds);
+            const hint = suggestion ? ` Did you mean "${suggestion}"?` : "";
+            errors.push(
+              `connections[${idx}].${endKey} ("${rawEnd}") references unknown element id "${baseId}".${hint}`
+            );
+          }
+        }
+      });
+    }
   }
+
   return {
     valid: errors.length === 0,
     errors,
-    spec: errors.length === 0 ? (obj                               ) : undefined,
+    spec:
+      errors.length === 0
+        ? (parsedInput                               )
+        : undefined,
   };
 }
 
@@ -6960,6 +7553,7 @@ export class AiIllustrationElement extends BaseHTMLElement {
 
           shadow            ;
           parsedSpec                          = null;
+          parseError                = null;
           currentScene                    = null;
           themeObserver                ;
           resizeObserver                 ;
@@ -6982,6 +7576,7 @@ export class AiIllustrationElement extends BaseHTMLElement {
       this.parseSpecString(val);
     } else {
       this.parsedSpec = val;
+      this.parseError = null;
     }
     this.render();
   }
@@ -7040,30 +7635,39 @@ export class AiIllustrationElement extends BaseHTMLElement {
       return;
     }
 
-    const scriptEl = this.querySelector('script[type="application/json"]');
+    const scriptEl = this.querySelector(
+      'script[type="application/json"], script[type="application/yaml"]'
+    );
     if (scriptEl && scriptEl.textContent) {
       this.parseSpecString(scriptEl.textContent);
       return;
     }
 
     const rawText = this.textContent?.trim();
-    if (rawText && rawText.startsWith("{")) {
+    if (rawText) {
       this.parseSpecString(rawText);
     }
   }
 
           parseSpecString(raw        )       {
     try {
-      const obj = JSON.parse(raw);
-      this.parsedSpec = obj;
-    } catch {
+      const obj = parseIllustrationSpecText(raw);
+      this.parsedSpec = obj                    ;
+      this.parseError = null;
+    } catch (err) {
       this.parsedSpec = null;
+      this.parseError = (err         ).message;
     }
   }
 
          render()       {
-    if (!this.parsedSpec) {
+    if (!this.parsedSpec && !this.parseError) {
       this.loadInitialSpecFromDom();
+    }
+    if (this.parseError) {
+      this.shadow.innerHTML = `<style>${COMPONENT_STYLES}</style>
+        <div class="ai-ill-error">Spec Parse Error:\n${this.parseError}</div>`;
+      return;
     }
     if (!this.parsedSpec) return;
 
@@ -7434,14 +8038,19 @@ export function registerAiIllustrationElement(
 // --- src/integrations/remark-plugin.ts ---
 /**
  * Remark / MDX Build-Time Plugin
- * Transforms ```illustration JSON/YAML code blocks into <ai-illustration> custom elements.
+ * Transforms ```illustration JSON/YAML code blocks into <ai-illustration> custom elements,
+ * with built-in YAML/Loose-JSON parsing and SSG pre-rendered inline SVG fallback for Zero-CLS & SEO/RSS.
  */
+
+
+
 
 export function remarkAiIllustration(
   options                              = {}
 ) {
   const tagName = options.tagName || "ai-illustration";
   const responsive = options.responsive || "reflow";
+  const prerenderSvg = options.prerenderSvg ?? true;
 
   return function transformer(tree           )       {
     const walk = (node           ) => {
@@ -7456,12 +8065,10 @@ export function remarkAiIllustration(
           let parsed         ;
 
           try {
-            if (raw.startsWith("{")) {
-              parsed = JSON.parse(raw);
-            } else if (options.parseYaml) {
+            if (!raw.startsWith("{") && options.parseYaml) {
               parsed = options.parseYaml(raw);
             } else {
-              parsed = JSON.parse(raw);
+              parsed = parseIllustrationSpecText(raw);
             }
           } catch (err) {
             throw new Error(
@@ -7470,7 +8077,7 @@ export function remarkAiIllustration(
           }
 
           const check = validateIllustrationSpec(parsed);
-          if (!check.valid) {
+          if (!check.valid || !check.spec) {
             throw new Error(
               `[remark-ai-illustration] Invalid IllustrationSpec:\n${check.errors.join("\n")}`
             );
@@ -7484,9 +8091,23 @@ export function remarkAiIllustration(
             ? ` preset="${options.defaultPreset}"`
             : "";
 
+          let ssrFallbackHtml = "";
+          if (prerenderSvg) {
+            const ssrTheme = resolveThemeTokens(
+              null,
+              options.defaultPreset || check.spec.style?.preset,
+              check.spec.style?.roughness
+            );
+            const ssrScene = compileIllustration(check.spec, ssrTheme, {
+              compactViewport: false,
+            });
+            const ssrSvg = renderSceneGraphToSvgString(ssrScene);
+            ssrFallbackHtml = `<div class="ai-ill-ssr-fallback">${ssrSvg}</div>`;
+          }
+
           node.children[i] = {
             type: "html",
-            value: `<${tagName}${presetAttr} responsive="${responsive}"><script type="application/json">${serialized}</script></${tagName}>`,
+            value: `<${tagName}${presetAttr} responsive="${responsive}"><script type="application/json">${serialized}</script>${ssrFallbackHtml}</${tagName}>`,
           };
         } else {
           walk(child);
