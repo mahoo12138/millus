@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import {
   compileIllustration,
+  parseColorToRgb,
   resolveThemeTokens,
   renderSceneGraphToSvgString,
   remarkAiIllustration,
@@ -473,4 +474,96 @@ if (selfEdge.labelBox) {
   );
 }
 
-console.log("✅ All compiler, layout, sub-anchor, reflow, sketch, remark, and P0 routing tests passed!");
+// 10. Test P1: Modern CSS Color Parser (hsl, oklch, CSS Color 4 rgb) & Blueprint Preset
+const hslColor = parseColorToRgb("hsl(210, 100%, 50%)", { r: 0, g: 0, b: 0 });
+assert.equal(hslColor.r, 0);
+assert.ok(Math.abs(hslColor.g - 128) <= 1);
+assert.equal(hslColor.b, 255);
+
+const oklchColor = parseColorToRgb("oklch(0.62 0.19 250)", { r: 0, g: 0, b: 0 });
+assert.ok(
+  oklchColor.b > oklchColor.r && oklchColor.b > 180,
+  "oklch(0.62 0.19 250) must resolve to a bright blue RGB tuple"
+);
+
+const spaceRgb = parseColorToRgb("rgb(16 185 129 / 0.8)", { r: 0, g: 0, b: 0 });
+assert.deepEqual(spaceRgb, { r: 16, g: 185, b: 129 });
+
+const blueprintTheme = resolveThemeTokens(null, "blueprint");
+assert.equal(blueprintTheme.geometry.preset, "blueprint");
+assert.equal(blueprintTheme.geometry.baseRadius, 3);
+
+// 11. Test P1: Sketch Edge Companion Path, Code-Block Syntax Highlighting & New Technical Primitives
+assert.ok(
+  svgOut.includes("ai-ill-edge-rough"),
+  "Sketch preset must render hand-drawn companion paths on connection edges"
+);
+assert.ok(
+  svgOut.includes("<tspan"),
+  "Code-block must render syntax-highlighted <tspan> tokens"
+);
+
+const p1PrimitivesSpec: IllustrationSpec = {
+  title: "P1 Technical Primitives Test",
+  style: { preset: "blueprint" },
+  elements: [
+    {
+      id: "pkt_hdr",
+      type: "bitfield",
+      title: "Packet Frame",
+      totalBits: 32,
+      fields: [
+        { name: "Magic", bits: 16, value: "0xCAFE", tone: "primary" },
+        { name: "Len", bits: 16, value: "1024", tone: "accent" },
+      ],
+    },
+    {
+      id: "msg_queue",
+      type: "queue",
+      label: "Event Queue",
+      sublabel: "RingBuffer",
+      place: { below: "pkt_hdr", gap: 40 },
+    },
+    {
+      id: "db_store",
+      type: "cylinder",
+      label: "RocksDB",
+      sublabel: "SSTable",
+      place: { rightOf: "msg_queue", gap: 56 },
+    },
+    {
+      id: "rpc_seq",
+      type: "sequence",
+      title: "Replication Sequence",
+      place: { rightOf: "pkt_hdr", gap: 56 },
+      actors: [
+        { id: "client", label: "Client", tone: "primary" },
+        { id: "server", label: "Server", tone: "success" },
+      ],
+      messages: [
+        { from: "client", to: "server", label: "WriteBatch", type: "sync" },
+        { from: "server", to: "client", label: "Ack", type: "reply" },
+      ],
+    },
+  ],
+  connections: [
+    { from: "pkt_hdr.field_1@bottom", to: "msg_queue@top", label: "Enqueue" },
+    { from: "msg_queue@right", to: "db_store@left", label: "Flush" },
+    { from: "pkt_hdr@right", to: "rpc_seq.client@left", label: "Trigger" },
+  ],
+};
+
+const p1Scene = compileIllustration(p1PrimitivesSpec, blueprintTheme);
+assert.ok(
+  p1Scene.anchorRegistry["pkt_hdr.field_1"],
+  "Bitfield segment sub-anchor pkt_hdr.field_1 must be registered"
+);
+assert.ok(
+  p1Scene.anchorRegistry["rpc_seq.client"] &&
+    p1Scene.anchorRegistry["rpc_seq.msg_1"],
+  "Sequence actor and message sub-anchors must be registered"
+);
+const p1Svg = renderSceneGraphToSvgString(p1Scene);
+assert.ok(p1Svg.includes("RocksDB") && p1Svg.includes("0xCAFE"));
+
+console.log("✅ All compiler, layout, sub-anchor, reflow, sketch, remark, P0, and P1 tests passed!");

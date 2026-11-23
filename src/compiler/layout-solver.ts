@@ -10,6 +10,7 @@
 
 import type {
   BadgeElementSpec,
+  BitfieldElementSpec,
   BoundingBox,
   CalloutElementSpec,
   CardElementSpec,
@@ -28,7 +29,9 @@ import type {
   ResolvedThemeTokens,
   SceneNode,
   SemanticTone,
+  SequenceElementSpec,
   SubAnchorRenderItem,
+  SyntaxTokenSpan,
   TableCellInput,
   TableElementSpec,
   TerminalElementSpec,
@@ -56,6 +59,109 @@ function normalizePadding(
   if (typeof pad === "number") return [pad, pad, pad, pad];
   if (pad.length === 2) return [pad[0], pad[1], pad[0], pad[1]];
   return pad;
+}
+
+const CODE_KEYWORDS = new Set([
+  "import",
+  "export",
+  "from",
+  "const",
+  "let",
+  "var",
+  "function",
+  "return",
+  "if",
+  "else",
+  "for",
+  "while",
+  "switch",
+  "case",
+  "break",
+  "continue",
+  "class",
+  "interface",
+  "type",
+  "extends",
+  "implements",
+  "new",
+  "async",
+  "await",
+  "try",
+  "catch",
+  "throw",
+  "def",
+  "fn",
+  "pub",
+  "struct",
+  "enum",
+  "impl",
+  "match",
+  "use",
+  "package",
+  "func",
+  "go",
+  "defer",
+  "select",
+  "chan",
+  "true",
+  "false",
+  "null",
+  "undefined",
+  "nil",
+  "void",
+]);
+
+function tokenizeCodeLine(
+  line: string,
+  baseColor: string
+): SyntaxTokenSpan[] {
+  if (!line) return [{ text: "", color: baseColor }];
+
+  // Full-line comment or markdown heading/fence
+  const trimmed = line.trimStart();
+  if (trimmed.startsWith("//") || trimmed.startsWith("--")) {
+    return [{ text: line, color: "#64748b" }];
+  }
+  if (trimmed.startsWith("```")) {
+    return [{ text: line, color: "#38bdf8", fontWeight: 600 }];
+  }
+  if (trimmed.startsWith("#")) {
+    return [{ text: line, color: "#94a3b8", fontWeight: 600 }];
+  }
+
+  const tokens: SyntaxTokenSpan[] = [];
+  const regex =
+    /(\/\/.*$|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`|\b0x[0-9a-fA-F]+\b|\b\d+(?:\.\d+)?\b|\b[A-Za-z_][A-Za-z0-9_-]*\b(?=\s*:)|\b[A-Za-z_][A-Za-z0-9_]*\b|\s+|[^\s"A-Za-z0-9_]+)/g;
+
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(line)) !== null) {
+    const raw = match[0];
+    if (raw.startsWith("//")) {
+      tokens.push({ text: raw, color: "#64748b" });
+    } else if (
+      (raw.startsWith('"') && raw.endsWith('"')) ||
+      (raw.startsWith("'") && raw.endsWith("'")) ||
+      (raw.startsWith("`") && raw.endsWith("`"))
+    ) {
+      tokens.push({ text: raw, color: "#34d399" });
+    } else if (/^(0x[0-9a-fA-F]+|\d+(?:\.\d+)?)$/.test(raw)) {
+      tokens.push({ text: raw, color: "#fb923c" });
+    } else if (
+      /^[A-Za-z_][A-Za-z0-9_-]*$/.test(raw) &&
+      line.slice(match.index + raw.length).trimStart().startsWith(":")
+    ) {
+      // Property / YAML key
+      tokens.push({ text: raw, color: "#38bdf8" });
+    } else if (CODE_KEYWORDS.has(raw)) {
+      tokens.push({ text: raw, color: "#c084fc", fontWeight: 600 });
+    } else if (/^[A-Z][A-Za-z0-9_]*$/.test(raw)) {
+      tokens.push({ text: raw, color: "#fbbf24" });
+    } else {
+      tokens.push({ text: raw, color: baseColor });
+    }
+  }
+
+  return tokens.length > 0 ? tokens : [{ text: line, color: baseColor }];
 }
 
 export class HybridLayoutSolver {
@@ -308,10 +414,16 @@ export class HybridLayoutSolver {
         return this.buildPolygonNode(spec);
       case "path":
         return this.buildPathNode(spec);
+      case "bitfield":
+        return this.buildBitfieldNode(spec);
+      case "sequence":
+        return this.buildSequenceNode(spec);
       case "rect":
       case "circle":
       case "ellipse":
       case "diamond":
+      case "cylinder":
+      case "queue":
       default:
         return this.buildPrimitiveShapeNode(spec as RectElementSpec);
     }
@@ -677,15 +789,19 @@ export class HybridLayoutSolver {
         textAnchor: "end",
       });
 
-      // Code text
+      // Code text with lightweight syntax highlighting tokens
+      const baseCodeColor = isHighlighted
+        ? "#f8fafc"
+        : this.theme.colors.codeText;
       decorations.push({
         kind: "text",
         x: padX + gutterWidth,
         y: lineY + 15,
         text: lineText,
+        tokens: tokenizeCodeLine(lineText, baseCodeColor),
         fontFamily: fontMono,
         fontSize: codeFontSize,
-        textColor: isHighlighted ? "#f8fafc" : this.theme.colors.codeText,
+        textColor: baseCodeColor,
       });
     });
 
@@ -1573,6 +1689,557 @@ export class HybridLayoutSolver {
     };
   }
 
+  private buildBitfieldNode(spec: BitfieldElementSpec): SceneNode {
+    const id = spec.id || this.nextId("bitfield");
+    const style = resolveNodeStyle(
+      spec.style,
+      this.theme,
+      "outlined",
+      "primary"
+    );
+    const fontSans = this.theme.typography.fontSans;
+    const fontMono = this.theme.typography.fontMono;
+    const fields = spec.fields || [];
+
+    const titleBarHeight = spec.title ? 30 : 0;
+    const rulerHeight = 20;
+    const cellHeight = 46;
+    const padX = 12;
+
+    const fieldWidths: number[] = [];
+    const bitCounts: number[] = [];
+
+    for (const f of fields) {
+      const bitNum =
+        typeof f.bits === "number"
+          ? Math.max(1, f.bits)
+          : parseInt(String(f.bits), 10) || 8;
+      bitCounts.push(bitNum);
+
+      const nameW = this.measurer.measureLineWidth(f.name, 12, fontMono, 600, true);
+      const valW = f.value
+        ? this.measurer.measureLineWidth(f.value, 10.5, fontMono, 400, true)
+        : 0;
+      const bitLabelW = this.measurer.measureLineWidth(
+        typeof f.bits === "number" ? `${f.bits}b` : String(f.bits),
+        9.5,
+        fontMono,
+        500,
+        true
+      );
+      const minW = Math.max(nameW, valW + bitLabelW + 10, 56) + padX * 2;
+      const propW = Math.min(200, Math.max(minW, bitNum * 7));
+      fieldWidths.push(Math.ceil(propW));
+    }
+
+    const rawTotalW = Math.max(180, fieldWidths.reduce((a, b) => a + b, 0));
+    const width = typeof spec.width === "number" ? spec.width : rawTotalW;
+    const height =
+      typeof spec.height === "number"
+        ? spec.height
+        : titleBarHeight + rulerHeight + cellHeight;
+
+    const decorations: PrimitiveDecoration[] = [];
+    const subAnchors: SubAnchorRenderItem[] = [];
+    const tonePalette = this.theme.colors.tones[style.tone];
+
+    let cursorY = 0;
+
+    if (spec.title) {
+      decorations.push({
+        kind: "rect",
+        x: 1,
+        y: 1,
+        width: width - 2,
+        height: titleBarHeight,
+        rx: Math.max(0, style.radius - 1),
+        fill: tonePalette.softBg,
+      });
+      decorations.push({
+        kind: "text",
+        x: padX,
+        y: titleBarHeight / 2 + 4,
+        text: spec.title,
+        fontFamily: fontSans,
+        fontSize: 12,
+        fontWeight: 600,
+        textColor: style.textColor,
+      });
+      if (spec.totalBits) {
+        decorations.push({
+          kind: "text",
+          x: width - padX,
+          y: titleBarHeight / 2 + 4,
+          text: `${spec.totalBits}-bit`,
+          fontFamily: fontMono,
+          fontSize: 10.5,
+          fontWeight: 600,
+          textColor: tonePalette.main,
+          textAnchor: "end",
+        });
+      }
+      decorations.push({
+        kind: "line",
+        x: 0,
+        y: titleBarHeight,
+        x2: width,
+        y2: titleBarHeight,
+        stroke: style.stroke,
+        strokeWidth: 1,
+      });
+      cursorY += titleBarHeight;
+    }
+
+    // Bit offset ruler strip
+    decorations.push({
+      kind: "rect",
+      x: 1,
+      y: cursorY + 1,
+      width: width - 2,
+      height: rulerHeight - 1,
+      fill: this.theme.colors.surface,
+    });
+    decorations.push({
+      kind: "line",
+      x: 0,
+      y: cursorY + rulerHeight,
+      x2: width,
+      y2: cursorY + rulerHeight,
+      stroke: this.theme.colors.border,
+      strokeWidth: 1,
+    });
+
+    const cellY = cursorY + rulerHeight;
+    let colX = 0;
+    let bitCursor = 0;
+
+    fields.forEach((f, idx) => {
+      const fw =
+        idx === fields.length - 1
+          ? Math.max(fieldWidths[idx], width - colX)
+          : fieldWidths[idx];
+      const bitSpan = bitCounts[idx];
+      const fTone = f.tone || style.tone;
+      const fPalette = this.theme.colors.tones[fTone];
+      const anchorId = `${id}.field_${idx}`;
+
+      subAnchors.push({
+        anchorId,
+        x: colX,
+        y: cellY,
+        width: fw,
+        height: cellHeight,
+        highlight: Boolean(f.tone),
+        tone: fTone,
+      });
+
+      // Start bit offset label in ruler
+      decorations.push({
+        kind: "text",
+        x: colX + 6,
+        y: cursorY + 13.5,
+        text: String(bitCursor),
+        fontFamily: fontMono,
+        fontSize: 9.5,
+        textColor: style.mutedTextColor,
+      });
+
+      if (idx === fields.length - 1) {
+        decorations.push({
+          kind: "text",
+          x: colX + fw - 6,
+          y: cursorY + 13.5,
+          text: String(bitCursor + bitSpan - 1),
+          fontFamily: fontMono,
+          fontSize: 9.5,
+          textColor: style.mutedTextColor,
+          textAnchor: "end",
+        });
+      }
+
+      // Field background cell
+      decorations.push({
+        kind: "table-cell",
+        anchorId,
+        x: colX + 1,
+        y: cellY + 1,
+        width: fw - 2,
+        height: cellHeight - 2,
+        fill: f.tone ? fPalette.softBg : "transparent",
+      });
+
+      if (idx > 0) {
+        decorations.push({
+          kind: "line",
+          x: colX,
+          y: cursorY,
+          x2: colX,
+          y2: cellY + cellHeight,
+          stroke: this.theme.colors.border,
+          strokeWidth: 1,
+        });
+      }
+
+      // Field name
+      decorations.push({
+        kind: "text",
+        x: colX + fw / 2,
+        y: f.value ? cellY + 18 : cellY + 23,
+        text: f.name,
+        fontFamily: fontMono,
+        fontSize: 12,
+        fontWeight: 600,
+        textColor: f.tone ? fPalette.main : style.textColor,
+        textAnchor: "middle",
+      });
+
+      // Bit width / value sublabel
+      const subText = f.value
+        ? `${f.value} (${typeof f.bits === "number" ? `${f.bits}b` : f.bits})`
+        : typeof f.bits === "number"
+        ? `${f.bits} bits`
+        : String(f.bits);
+      decorations.push({
+        kind: "text",
+        x: colX + fw / 2,
+        y: cellY + 35,
+        text: subText,
+        fontFamily: fontMono,
+        fontSize: 10,
+        textColor: style.mutedTextColor,
+        textAnchor: "middle",
+      });
+
+      colX += fw;
+      bitCursor += bitSpan;
+    });
+
+    return {
+      id,
+      type: "bitfield",
+      x: spec.x ?? 0,
+      y: spec.y ?? 0,
+      width,
+      height,
+      style,
+      shape: "rect",
+      decorations,
+      subAnchors,
+      children: [],
+    };
+  }
+
+  private buildSequenceNode(spec: SequenceElementSpec): SceneNode {
+    const id = spec.id || this.nextId("seq");
+    const style = resolveNodeStyle(
+      spec.style,
+      this.theme,
+      "outlined",
+      "neutral"
+    );
+    const fontSans = this.theme.typography.fontSans;
+    const fontMono = this.theme.typography.fontMono;
+    const actors = spec.actors || [];
+    const messages = spec.messages || [];
+
+    const titleBarHeight = spec.title ? 32 : 0;
+    const padX = 24;
+    const padTop = 16;
+    const padBottom = 20;
+    const actorBoxH = 40;
+    const msgRowH = 44;
+
+    // Measure minimum actor widths and message label widths between actors
+    const actorWidths = actors.map((a) => {
+      const lw = this.measurer.measureLineWidth(a.label, 12.5, fontSans, 600);
+      const sw = a.sublabel
+        ? this.measurer.measureLineWidth(a.sublabel, 10, fontMono, 400, true)
+        : 0;
+      return Math.max(96, Math.ceil(Math.max(lw, sw) + 28));
+    });
+
+    const actorIndexById = new Map<string, number>();
+    actors.forEach((a, idx) => actorIndexById.set(a.id, idx));
+
+    const colGaps = new Array<number>(Math.max(0, actors.length - 1)).fill(120);
+    for (const msg of messages) {
+      const i1 = actorIndexById.get(msg.from) ?? 0;
+      const i2 = actorIndexById.get(msg.to) ?? 0;
+      const lw =
+        this.measurer.measureLineWidth(msg.label, 11, fontSans, 600) + 44;
+      if (Math.abs(i2 - i1) === 1) {
+        const minIdx = Math.min(i1, i2);
+        colGaps[minIdx] = Math.max(colGaps[minIdx], lw);
+      }
+    }
+
+    const actorCentersX: number[] = [];
+    let cursorX = padX + (actorWidths[0] || 96) / 2;
+    for (let i = 0; i < actors.length; i++) {
+      actorCentersX.push(cursorX);
+      if (i < actors.length - 1) {
+        cursorX +=
+          actorWidths[i] / 2 +
+          Math.max(
+            colGaps[i],
+            (actorWidths[i] + actorWidths[i + 1]) / 2 + 32
+          );
+      }
+    }
+
+    const lastActorHalf =
+      actors.length > 0 ? actorWidths[actors.length - 1] / 2 : 60;
+    const totalW = Math.max(240, Math.ceil(cursorX + lastActorHalf + padX));
+    const width = typeof spec.width === "number" ? spec.width : totalW;
+    const timelineStartY = titleBarHeight + padTop + actorBoxH;
+    const timelineEndY =
+      timelineStartY + Math.max(1, messages.length) * msgRowH + 14;
+    const height =
+      typeof spec.height === "number"
+        ? spec.height
+        : timelineEndY + padBottom;
+
+    const decorations: PrimitiveDecoration[] = [];
+    const subAnchors: SubAnchorRenderItem[] = [];
+
+    if (spec.title) {
+      decorations.push({
+        kind: "rect",
+        x: 1,
+        y: 1,
+        width: width - 2,
+        height: titleBarHeight,
+        rx: Math.max(0, style.radius - 1),
+        fill: this.theme.colors.surface,
+      });
+      decorations.push({
+        kind: "text",
+        x: 16,
+        y: titleBarHeight / 2 + 4,
+        text: spec.title,
+        fontFamily: fontSans,
+        fontSize: 12,
+        fontWeight: 600,
+        textColor: style.textColor,
+      });
+      decorations.push({
+        kind: "line",
+        x: 0,
+        y: titleBarHeight,
+        x2: width,
+        y2: titleBarHeight,
+        stroke: style.stroke,
+        strokeWidth: 1,
+      });
+    }
+
+    // Render actor headers & vertical lifelines
+    actors.forEach((actor, idx) => {
+      const cx = actorCentersX[idx];
+      const aw = actorWidths[idx];
+      const ax = cx - aw / 2;
+      const ay = titleBarHeight + padTop;
+      const aTone = actor.tone || "primary";
+      const aPalette = this.theme.colors.tones[aTone];
+      const actorAnchorId = `${id}.${actor.id}`;
+
+      subAnchors.push({
+        anchorId: actorAnchorId,
+        x: ax,
+        y: ay,
+        width: aw,
+        height: actorBoxH,
+        highlight: true,
+        tone: aTone,
+      });
+
+      // Vertical lifeline
+      decorations.push({
+        kind: "line",
+        x: cx,
+        y: ay + actorBoxH,
+        x2: cx,
+        y2: timelineEndY,
+        stroke: this.theme.colors.border,
+        strokeWidth: 1.25,
+        strokeDasharray: "4 4",
+      });
+
+      // Actor header card
+      decorations.push({
+        kind: "rect",
+        x: ax,
+        y: ay,
+        width: aw,
+        height: actorBoxH,
+        rx: 7,
+        fill: aPalette.softBg,
+        stroke: aPalette.softBorder,
+        strokeWidth: 1.5,
+      });
+
+      decorations.push({
+        kind: "text",
+        x: cx,
+        y: actor.sublabel ? ay + 16 : ay + 24,
+        text: actor.label,
+        fontFamily: fontSans,
+        fontSize: 12,
+        fontWeight: 600,
+        textColor: style.textColor,
+        textAnchor: "middle",
+      });
+
+      if (actor.sublabel) {
+        decorations.push({
+          kind: "text",
+          x: cx,
+          y: ay + 31,
+          text: actor.sublabel,
+          fontFamily: fontMono,
+          fontSize: 10,
+          textColor: aPalette.main,
+          textAnchor: "middle",
+        });
+      }
+    });
+
+    // Render sequence messages
+    messages.forEach((msg, mIdx) => {
+      const fromIdx = actorIndexById.get(msg.from) ?? 0;
+      const toIdx = actorIndexById.get(msg.to) ?? 0;
+      const x1 = actorCentersX[fromIdx] ?? padX;
+      const x2 = actorCentersX[toIdx] ?? padX;
+      const msgY = timelineStartY + 26 + mIdx * msgRowH;
+      const mTone = msg.tone || (msg.type === "reply" ? "neutral" : "primary");
+      const mColor =
+        mTone === "neutral"
+          ? this.theme.colors.textMuted
+          : this.theme.colors.tones[mTone].main;
+      const msgAnchorId = `${id}.msg_${mIdx + 1}`;
+
+      subAnchors.push({
+        anchorId: msgAnchorId,
+        x: Math.min(x1, x2),
+        y: msgY - 18,
+        width: Math.max(40, Math.abs(x2 - x1)),
+        height: 28,
+        tone: mTone,
+      });
+
+      // Activation dots on lifelines
+      decorations.push({
+        kind: "circle",
+        x: x1,
+        y: msgY,
+        r: 3,
+        fill: mColor,
+      });
+
+      if (fromIdx === toIdx) {
+        // Self-call message loop
+        const loopW = 36;
+        const loopH = 14;
+        decorations.push({
+          kind: "line",
+          x: x1,
+          y: msgY - 4,
+          x2: x1 + loopW,
+          y2: msgY - 4,
+          stroke: mColor,
+          strokeWidth: 1.5,
+        });
+        decorations.push({
+          kind: "line",
+          x: x1 + loopW,
+          y: msgY - 4,
+          x2: x1 + loopW,
+          y2: msgY + loopH,
+          stroke: mColor,
+          strokeWidth: 1.5,
+        });
+        decorations.push({
+          kind: "line",
+          x: x1 + loopW,
+          y: msgY + loopH,
+          x2: x1 + 4,
+          y2: msgY + loopH,
+          stroke: mColor,
+          strokeWidth: 1.5,
+        });
+        decorations.push({
+          kind: "text",
+          x: x1 + loopW + 8,
+          y: msgY + 6,
+          text: msg.label,
+          fontFamily: fontSans,
+          fontSize: 11,
+          fontWeight: 600,
+          textColor: mColor,
+        });
+      } else {
+        const dir = x2 >= x1 ? 1 : -1;
+        const endX = x2 - dir * 5;
+        decorations.push({
+          kind: "line",
+          x: x1,
+          y: msgY,
+          x2: endX,
+          y2: msgY,
+          stroke: mColor,
+          strokeWidth: 1.6,
+          strokeDasharray: msg.type === "reply" ? "5 4" : undefined,
+        });
+        // Arrowhead chevron lines
+        decorations.push({
+          kind: "line",
+          x: x2 - dir * 8,
+          y: msgY - 4,
+          x2: x2 - dir * 1,
+          y2: msgY,
+          stroke: mColor,
+          strokeWidth: 1.8,
+        });
+        decorations.push({
+          kind: "line",
+          x: x2 - dir * 8,
+          y: msgY + 4,
+          x2: x2 - dir * 1,
+          y2: msgY,
+          stroke: mColor,
+          strokeWidth: 1.8,
+        });
+
+        const midX = (x1 + x2) / 2;
+        decorations.push({
+          kind: "text",
+          x: midX,
+          y: msgY - 7,
+          text: msg.label,
+          fontFamily: fontSans,
+          fontSize: 11,
+          fontWeight: 600,
+          textColor: mColor,
+          textAnchor: "middle",
+        });
+      }
+    });
+
+    return {
+      id,
+      type: "sequence",
+      x: spec.x ?? 0,
+      y: spec.y ?? 0,
+      width,
+      height,
+      style,
+      shape: "rect",
+      decorations,
+      subAnchors,
+      children: [],
+    };
+  }
+
   private buildPrimitiveShapeNode(spec: RectElementSpec): SceneNode {
     const id = spec.id || this.nextId(spec.type);
     const style = resolveNodeStyle(spec.style, this.theme, "soft", "primary");
@@ -1584,12 +2251,19 @@ export class HybridLayoutSolver {
       ? this.measurer.measureLineWidth(spec.sublabel, 11, fontSans, 400)
       : 0;
 
-    const minW = spec.type === "diamond" ? Math.max(labelW, subW) + 56 : Math.max(labelW, subW) + 36;
+    const minW =
+      spec.type === "diamond"
+        ? Math.max(labelW, subW) + 56
+        : spec.type === "queue"
+        ? Math.max(labelW, subW) + 52
+        : Math.max(labelW, subW) + 36;
     const width =
       typeof spec.width === "number"
         ? spec.width
         : spec.type === "circle"
         ? Math.max(minW, 76)
+        : spec.type === "queue"
+        ? Math.max(minW, 136)
         : Math.max(minW, 120);
     const height =
       typeof spec.height === "number"
@@ -1598,16 +2272,25 @@ export class HybridLayoutSolver {
         ? width
         : spec.type === "diamond"
         ? 76
+        : spec.type === "cylinder"
+        ? spec.sublabel
+          ? 82
+          : 68
         : spec.sublabel
         ? 64
         : 48;
 
     const decorations: PrimitiveDecoration[] = [];
+    const textCenterY =
+      spec.type === "cylinder" ? height / 2 + 7 : height / 2;
+    const textCenterX =
+      spec.type === "queue" ? width / 2 - 4 : width / 2;
+
     if (spec.label) {
       decorations.push({
         kind: "text",
-        x: width / 2,
-        y: spec.sublabel ? height / 2 - 2 : height / 2 + 4.5,
+        x: textCenterX,
+        y: spec.sublabel ? textCenterY - 2 : textCenterY + 4.5,
         text: spec.label,
         fontFamily: fontSans,
         fontSize: 13,
@@ -1619,8 +2302,8 @@ export class HybridLayoutSolver {
     if (spec.sublabel) {
       decorations.push({
         kind: "text",
-        x: width / 2,
-        y: height / 2 + 15,
+        x: textCenterX,
+        y: textCenterY + 15,
         text: spec.sublabel,
         fontFamily: fontSans,
         fontSize: 11,

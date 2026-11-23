@@ -1,6 +1,7 @@
 /**
  * Reactive SVG Renderer for SceneGraph
- * Supports Clean & Sketch presets, Sub-Anchor Focus Highlighting, and Animated Data Flows.
+ * Supports Clean, Sketch & Blueprint presets, Syntax-Highlighted Code Blocks,
+ * Sub-Anchor Focus Highlighting, and Animated Data Flows.
  */
 
 import type {
@@ -12,7 +13,9 @@ import type {
   SemanticTone,
 } from "../schema/spec.ts";
 import {
+  generateRoughEdgeCompanionPath,
   generateRoughEllipseStrokePath,
+  generateRoughLinePath,
   generateRoughPolygonStrokePath,
   generateRoughRectStrokePath,
 } from "./rough-adapter.ts";
@@ -39,6 +42,14 @@ const ICON_PATHS: Record<string, string> = {
   zap: `<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>`,
   shield: `<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>`,
   check: `<polyline points="20 6 9 17 4 12"/>`,
+  git: `<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" y1="9" x2="6" y2="21"/>`,
+  key: `<circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/>`,
+  box: `<path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/>`,
+  activity: `<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>`,
+  "hard-drive": `<line x1="22" y1="12" x2="2" y2="12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><line x1="6" y1="16" x2="6.01" y2="16"/><line x1="10" y1="16" x2="10.01" y2="16"/>`,
+  wifi: `<path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/>`,
+  sliders: `<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>`,
+  send: `<line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>`,
 };
 
 function renderIconSvg(
@@ -54,7 +65,13 @@ function renderIconSvg(
   return `<g transform="translate(${x.toFixed(1)}, ${y.toFixed(1)}) scale(${scale.toFixed(3)})" fill="none" stroke="${strokeColor}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${inner}</g>`;
 }
 
-function renderDecoration(dec: PrimitiveDecoration): string {
+function renderDecoration(
+  dec: PrimitiveDecoration,
+  rough: boolean,
+  nodeId: string,
+  idx: number,
+  roughness: number
+): string {
   switch (dec.kind) {
     case "rect":
       return `<rect x="${dec.x}" y="${dec.y}" width="${dec.width || 0}" height="${dec.height || 0}" rx="${dec.rx || 0}" fill="${dec.fill || "none"}" stroke="${dec.stroke || "none"}" stroke-width="${dec.strokeWidth || 0}" />`;
@@ -66,8 +83,23 @@ function renderDecoration(dec: PrimitiveDecoration): string {
     case "circle":
       return `<circle cx="${dec.x}" cy="${dec.y}" r="${dec.r || 4}" fill="${dec.fill || "none"}" stroke="${dec.stroke || "none"}" />`;
 
-    case "line":
-      return `<line x1="${dec.x}" y1="${dec.y}" x2="${dec.x2 ?? dec.x}" y2="${dec.y2 ?? dec.y}" stroke="${dec.stroke || "currentColor"}" stroke-width="${dec.strokeWidth || 1}" />`;
+    case "line": {
+      const dashAttr = dec.strokeDasharray
+        ? ` stroke-dasharray="${dec.strokeDasharray}"`
+        : "";
+      if (rough && !dec.strokeDasharray) {
+        const d = generateRoughLinePath(
+          dec.x,
+          dec.y,
+          dec.x2 ?? dec.x,
+          dec.y2 ?? dec.y,
+          `${nodeId}_line_${idx}`,
+          roughness * 0.65
+        );
+        return `<path d="${d}" fill="none" stroke="${dec.stroke || "currentColor"}" stroke-width="${dec.strokeWidth || 1}" />`;
+      }
+      return `<line x1="${dec.x}" y1="${dec.y}" x2="${dec.x2 ?? dec.x}" y2="${dec.y2 ?? dec.y}" stroke="${dec.stroke || "currentColor"}" stroke-width="${dec.strokeWidth || 1}"${dashAttr} />`;
+    }
 
     case "icon":
       return renderIconSvg(
@@ -78,8 +110,23 @@ function renderDecoration(dec: PrimitiveDecoration): string {
         dec.stroke || "currentColor"
       );
 
-    case "text":
+    case "text": {
+      if (dec.tokens && dec.tokens.length > 0) {
+        const tspans = dec.tokens
+          .map((tok) => {
+            const fillAttr = tok.color
+              ? ` fill="${tok.color}"`
+              : "";
+            const weightAttr = tok.fontWeight
+              ? ` font-weight="${tok.fontWeight}"`
+              : "";
+            return `<tspan${fillAttr}${weightAttr}>${escapeXml(tok.text)}</tspan>`;
+          })
+          .join("");
+        return `<text xml:space="preserve" x="${dec.x}" y="${dec.y}" fill="${dec.textColor || "currentColor"}" font-family="${escapeXml(dec.fontFamily || "sans-serif")}" font-size="${dec.fontSize || 12}px" font-weight="${dec.fontWeight || 400}" text-anchor="${dec.textAnchor || "start"}">${tspans}</text>`;
+      }
       return `<text x="${dec.x}" y="${dec.y}" fill="${dec.textColor || "currentColor"}" font-family="${escapeXml(dec.fontFamily || "sans-serif")}" font-size="${dec.fontSize || 12}px" font-weight="${dec.fontWeight || 400}" text-anchor="${dec.textAnchor || "start"}">${escapeXml(dec.text || "")}</text>`;
+    }
 
     default:
       return "";
@@ -99,6 +146,51 @@ function renderNodeShape(node: SceneNode, roughness: number): string {
       : style.elevation === "sm"
       ? ` filter="url(#ill-shadow-sm)"`
       : "";
+
+  if (shape === "cylinder") {
+    const ry = Math.min(13, Math.max(8, Math.round(h * 0.16)));
+    const bodyD = `M 0 ${ry} A ${w / 2} ${ry} 0 0 1 ${w} ${ry} L ${w} ${h - ry} A ${w / 2} ${ry} 0 0 1 0 ${h - ry} Z`;
+    const topCapD = `M 0 ${ry} A ${w / 2} ${ry} 0 0 0 ${w} ${ry}`;
+    const ring2D =
+      h >= 68
+        ? `<path d="M 0 ${ry + 8} A ${w / 2} ${ry} 0 0 0 ${w} ${ry + 8}" fill="none" stroke="${style.stroke}" stroke-width="${style.strokeWidth * 0.75}" opacity="0.55" />`
+        : "";
+    if (style.rough) {
+      const topRough = generateRoughEllipseStrokePath(
+        w / 2,
+        ry,
+        w / 2 - 1,
+        ry - 1,
+        `${node.id}_cyl_top`,
+        roughness * 0.85
+      );
+      const leftRough = generateRoughLinePath(
+        1,
+        ry,
+        1,
+        h - ry,
+        `${node.id}_cyl_l`,
+        roughness * 0.85
+      );
+      const rightRough = generateRoughLinePath(
+        w - 1,
+        ry,
+        w - 1,
+        h - ry,
+        `${node.id}_cyl_r`,
+        roughness * 0.85
+      );
+      return `<path d="${bodyD}" fill="${style.fill}" stroke="${style.stroke}" stroke-width="${style.strokeWidth}"${dashAttr}${filterAttr} /><path d="${topRough} ${leftRough} ${rightRough}" fill="none" stroke="${style.stroke}" stroke-width="${style.strokeWidth * 0.9}" />${ring2D}`;
+    }
+    return `<path d="${bodyD}" fill="${style.fill}" stroke="${style.stroke}" stroke-width="${style.strokeWidth}"${dashAttr}${filterAttr} /><path d="${topCapD}" fill="none" stroke="${style.stroke}" stroke-width="${style.strokeWidth}" />${ring2D}`;
+  }
+
+  if (shape === "queue") {
+    const rx = Math.min(13, Math.max(8, Math.round(w * 0.1)));
+    const bodyD = `M ${rx} 0 L ${w - rx} 0 A ${rx} ${h / 2} 0 0 1 ${w - rx} ${h} L ${rx} ${h} A ${rx} ${h / 2} 0 0 1 ${rx} 0 Z`;
+    const rightCapD = `M ${w - rx} 0 A ${rx} ${h / 2} 0 0 0 ${w - rx} ${h}`;
+    return `<path d="${bodyD}" fill="${style.fill}" stroke="${style.stroke}" stroke-width="${style.strokeWidth}"${dashAttr}${filterAttr} /><path d="${rightCapD}" fill="none" stroke="${style.stroke}" stroke-width="${style.strokeWidth}" />`;
+  }
 
   if (style.rough) {
     if (shape === "circle" || shape === "ellipse") {
@@ -198,7 +290,11 @@ function renderSceneNodeTree(
   anchorRegistry: Record<string, BoundingBox>
 ): string {
   const shapeSvg = renderNodeShape(node, roughness);
-  const decsSvg = node.decorations.map(renderDecoration).join("");
+  const decsSvg = node.decorations
+    .map((dec, idx) =>
+      renderDecoration(dec, node.style.rough, node.id, idx, roughness)
+    )
+    .join("");
 
   // Note: child.x and child.y are already converted to world coordinates in LayoutSolver
   const childrenSvg = node.children
@@ -228,6 +324,18 @@ function renderEdge(edge: SceneEdge, scene: SceneGraph): string {
   const dashAttr = dashVal ? ` stroke-dasharray="${dashVal}"` : "";
   const flowClass = isFlowAnim ? " ai-ill-edge-flow" : "";
 
+  let roughCompanionSvg = "";
+  if (scene.preset === "sketch" && edge.points.length >= 2) {
+    const companionD = generateRoughEdgeCompanionPath(
+      edge.points,
+      `${edge.id}_rough`,
+      scene.theme.geometry.roughness
+    );
+    if (companionD) {
+      roughCompanionSvg = `<path class="ai-ill-edge-rough" d="${companionD}" fill="none" stroke="${edge.stroke}" stroke-width="${(edge.strokeWidth * 0.8).toFixed(2)}" stroke-linecap="round" opacity="0.55"${dashAttr} />`;
+    }
+  }
+
   let pulseParticles = "";
   if (
     edge.animation.type === "pulse" ||
@@ -252,8 +360,9 @@ function renderEdge(edge: SceneEdge, scene: SceneGraph): string {
       edge.tone === "neutral"
         ? scene.theme.colors.border
         : scene.theme.colors.tones[edge.tone].softBorder;
+    const labelRx = scene.preset === "blueprint" ? 3 : 11;
     labelSvg = `<g class="ai-ill-edge-label">
-      <rect x="${lb.x.toFixed(1)}" y="${lb.y.toFixed(1)}" width="${lb.width.toFixed(1)}" height="${lb.height.toFixed(1)}" rx="11" fill="${scene.theme.colors.surfaceElevated}" stroke="${labelStroke}" stroke-width="1" filter="url(#ill-shadow-sm)" />
+      <rect x="${lb.x.toFixed(1)}" y="${lb.y.toFixed(1)}" width="${lb.width.toFixed(1)}" height="${lb.height.toFixed(1)}" rx="${labelRx}" fill="${scene.theme.colors.surfaceElevated}" stroke="${labelStroke}" stroke-width="1" filter="url(#ill-shadow-sm)" />
       <text x="${(lb.x + lb.width / 2).toFixed(1)}" y="${(lb.y + lb.height / 2 + 3.8).toFixed(1)}" fill="${edge.tone === "neutral" ? scene.theme.colors.textMuted : edge.stroke}" font-family="${escapeXml(scene.theme.typography.fontSans)}" font-size="11px" font-weight="600" text-anchor="middle">${escapeXml(edge.label)}</text>
     </g>`;
   }
@@ -261,6 +370,7 @@ function renderEdge(edge: SceneEdge, scene: SceneGraph): string {
   return `<g class="ai-ill-edge" data-edge-id="${escapeXml(edge.id)}" data-from="${escapeXml(edge.from)}" data-to="${escapeXml(edge.to)}">
     <!-- Invisible wider hit target for easy hover -->
     <path d="${edge.pathD}" fill="none" stroke="transparent" stroke-width="14" />
+    ${roughCompanionSvg}
     <path class="ai-ill-edge-path${flowClass}" d="${edge.pathD}" fill="none" stroke="${edge.stroke}" stroke-width="${edge.strokeWidth}" stroke-linecap="round" stroke-linejoin="round"${dashAttr}${markerStart}${markerEnd} />
     ${pulseParticles}
     ${labelSvg}
@@ -292,18 +402,24 @@ export function renderSceneGraphToSvgString(scene: SceneGraph): string {
 
   let bgPatternDef = "";
   let bgRectSvg = "";
-  if (background !== "transparent") {
-    if (background === "dots") {
+  const isBlueprint = scene.preset === "blueprint";
+  const effectiveBg = isBlueprint && background === "dots" ? "grid" : background;
+
+  if (effectiveBg !== "transparent") {
+    if (effectiveBg === "dots") {
       bgPatternDef = `<pattern id="ill-bg-dots" x="0" y="0" width="20" height="20" patternUnits="userSpaceOnUse">
         <circle cx="2" cy="2" r="1.15" fill="${theme.colors.gridDot}" />
       </pattern>`;
       bgRectSvg = `<rect width="${width}" height="${height}" rx="12" fill="${theme.colors.bg}" /><rect width="${width}" height="${height}" rx="12" fill="url(#ill-bg-dots)" />`;
-    } else if (background === "grid") {
+    } else if (effectiveBg === "grid") {
       bgPatternDef = `<pattern id="ill-bg-grid" x="0" y="0" width="24" height="24" patternUnits="userSpaceOnUse">
-        <path d="M 24 0 L 0 0 0 24" fill="none" stroke="${theme.colors.gridDot}" stroke-width="0.75" />
+        <path d="M 24 0 L 0 0 0 24" fill="none" stroke="${theme.colors.gridDot}" stroke-width="${isBlueprint ? "0.9" : "0.75"}" />
       </pattern>`;
-      bgRectSvg = `<rect width="${width}" height="${height}" rx="12" fill="${theme.colors.bg}" /><rect width="${width}" height="${height}" rx="12" fill="url(#ill-bg-grid)" />`;
-    } else if (background === "surface") {
+      const blueprintFrame = isBlueprint
+        ? `<rect x="8" y="8" width="${width - 16}" height="${height - 16}" fill="none" stroke="${theme.colors.gridDot}" stroke-width="1" stroke-dasharray="4 4" />`
+        : "";
+      bgRectSvg = `<rect width="${width}" height="${height}" rx="${isBlueprint ? 4 : 12}" fill="${theme.colors.bg}" /><rect width="${width}" height="${height}" rx="${isBlueprint ? 4 : 12}" fill="url(#ill-bg-grid)" />${blueprintFrame}`;
+    } else if (effectiveBg === "surface") {
       bgRectSvg = `<rect width="${width}" height="${height}" rx="12" fill="${theme.colors.surface}" />`;
     }
   }

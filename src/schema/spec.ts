@@ -63,7 +63,7 @@ export interface BaseElementSpec {
 }
 
 export interface RectElementSpec extends BaseElementSpec {
-  type: "rect" | "diamond" | "circle" | "ellipse";
+  type: "rect" | "diamond" | "circle" | "ellipse" | "cylinder" | "queue";
   label?: string;
   sublabel?: string;
   icon?: string;
@@ -167,6 +167,43 @@ export interface CalloutElementSpec extends BaseElementSpec {
   side?: "top" | "bottom" | "left" | "right";
 }
 
+export interface BitfieldSegmentSpec {
+  name: string;
+  bits: number | string;
+  value?: string;
+  tone?: SemanticTone;
+}
+
+export interface BitfieldElementSpec extends BaseElementSpec {
+  type: "bitfield";
+  title?: string;
+  totalBits?: number;
+  fields: BitfieldSegmentSpec[];
+}
+
+export interface SequenceActorSpec {
+  id: string;
+  label: string;
+  sublabel?: string;
+  tone?: SemanticTone;
+}
+
+export interface SequenceMessageSpec {
+  from: string;
+  to: string;
+  label: string;
+  type?: "sync" | "async" | "reply";
+  tone?: SemanticTone;
+  note?: string;
+}
+
+export interface SequenceElementSpec extends BaseElementSpec {
+  type: "sequence";
+  title?: string;
+  actors: SequenceActorSpec[];
+  messages: SequenceMessageSpec[];
+}
+
 export type ElementSpec =
   | RectElementSpec
   | PolygonElementSpec
@@ -179,7 +216,9 @@ export type ElementSpec =
   | TerminalElementSpec
   | TableElementSpec
   | BadgeElementSpec
-  | CalloutElementSpec;
+  | CalloutElementSpec
+  | BitfieldElementSpec
+  | SequenceElementSpec;
 
 export interface ConnectionAnimationSpec {
   type?: "none" | "flow" | "pulse" | "bidirectional";
@@ -297,6 +336,12 @@ export interface SubAnchorRenderItem {
   tone?: SemanticTone;
 }
 
+export interface SyntaxTokenSpan {
+  text: string;
+  color?: string;
+  fontWeight?: string | number;
+}
+
 export interface PrimitiveDecoration {
   kind:
     | "rect"
@@ -316,6 +361,7 @@ export interface PrimitiveDecoration {
   x2?: number;
   y2?: number;
   text?: string;
+  tokens?: SyntaxTokenSpan[];
   iconName?: string;
   fill?: string;
   stroke?: string;
@@ -338,7 +384,16 @@ export interface SceneNode {
   width: number;
   height: number;
   style: ResolvedNodeStyle;
-  shape: "rect" | "circle" | "ellipse" | "diamond" | "polygon" | "path" | "none";
+  shape:
+    | "rect"
+    | "circle"
+    | "ellipse"
+    | "diamond"
+    | "cylinder"
+    | "queue"
+    | "polygon"
+    | "path"
+    | "none";
   polygonPoints?: [number, number][];
   pathD?: string;
   calloutTail?: {

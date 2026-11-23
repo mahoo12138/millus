@@ -12,9 +12,12 @@ Instead of writing raw SVG or Mermaid, output a structured JSON (or YAML) block 
    - Between top-level siblings, use relative placement: \`place: { rightOf: "node_id", gap: 48, align: "center" }\` or \`below: "node_id"\`.
    - Only use explicit \`x, y\` coordinates for free-form geometric canvas drawings.
 3. **Use compound technical primitives**:
-   - \`card\`: Title, optional icon (\`cpu\`, \`layers\`, \`database\`, \`cloud\`, \`lock\`, \`sparkles\`, \`terminal\`, \`code\`, \`server\`, \`globe\`, \`zap\`), badge, and body text.
-   - \`code-block\`: Displays code with syntax lines and \`highlightLines: [2, 3]\`. Each 1-indexed line exposes an anchor \`<id>.line_<n>\` (e.g. \`from: "code1.line_2@right"\`).
+   - \`card\`: Title, optional icon (\`cpu\`, \`layers\`, \`database\`, \`cloud\`, \`lock\`, \`sparkles\`, \`terminal\`, \`code\`, \`server\`, \`globe\`, \`zap\`, \`shield\`, \`check\`, \`git\`, \`key\`, \`box\`, \`activity\`, \`hard-drive\`, \`wifi\`, \`sliders\`, \`send\`), badge, and body text.
+   - \`code-block\`: Displays syntax-highlighted code with \`highlightLines: [2, 3]\`. Each 1-indexed line exposes an anchor \`<id>.line_<n>\` (e.g. \`from: "code1.line_2@right"\`).
    - \`table\`: Memory layout, struct fields, or cache tables. Each cell exposes an anchor \`<id>.cell_<row>_<col>\`.
+   - \`bitfield\`: Network packet headers, CPU registers, or memory bit layouts (\`title\`, \`totalBits\`, \`fields: [{ name, bits, value, tone }]\`). Each field exposes an anchor \`<id>.field_<idx>\`.
+   - \`sequence\`: Protocol handshakes and RPC lifelines (\`title\`, \`actors: [{ id, label, sublabel, tone }]\`, \`messages: [{ from, to, label, type: "sync" | "async" | "reply", tone }]\`).
+   - \`cylinder\` & \`queue\`: 3D storage database cylinder and horizontal message queue pipe (\`label\`, \`sublabel\`, \`style\`).
    - \`terminal\`: CLI commands and outputs. Each 1-indexed line exposes an anchor \`<id>.line_<n>\`.
    - \`callout\`: Floating annotation pointing to \`target: "<node_or_subanchor_id>"\`.
 4. **Connections, Labels & Animation**:

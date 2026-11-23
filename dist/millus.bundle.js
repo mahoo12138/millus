@@ -72,7 +72,7 @@
  
 
                                                           
-                                                  
+                                                                         
                  
                     
                 
@@ -176,6 +176,43 @@
                                              
  
 
+                                      
+               
+                        
+                 
+                      
+ 
+
+                                                              
+                   
+                 
+                     
+                                
+ 
+
+                                    
+             
+                
+                    
+                      
+ 
+
+                                      
+               
+             
+                
+                                    
+                      
+                
+ 
+
+                                                              
+                   
+                 
+                              
+                                  
+ 
+
                          
                    
                       
@@ -188,7 +225,9 @@
                        
                     
                     
+                      
                        
+                        
 
                                           
                                                      
@@ -306,6 +345,12 @@
                       
  
 
+                                  
+               
+                 
+                               
+ 
+
                                       
        
             
@@ -325,6 +370,7 @@
               
               
                 
+                             
                     
                 
                   
@@ -347,7 +393,16 @@
                 
                  
                            
-                                                                                 
+        
+            
+              
+               
+               
+                
+             
+               
+            
+             
                                      
                  
                  
@@ -458,9 +513,12 @@ Instead of writing raw SVG or Mermaid, output a structured JSON (or YAML) block 
    - Between top-level siblings, use relative placement: \`place: { rightOf: "node_id", gap: 48, align: "center" }\` or \`below: "node_id"\`.
    - Only use explicit \`x, y\` coordinates for free-form geometric canvas drawings.
 3. **Use compound technical primitives**:
-   - \`card\`: Title, optional icon (\`cpu\`, \`layers\`, \`database\`, \`cloud\`, \`lock\`, \`sparkles\`, \`terminal\`, \`code\`, \`server\`, \`globe\`, \`zap\`), badge, and body text.
-   - \`code-block\`: Displays code with syntax lines and \`highlightLines: [2, 3]\`. Each 1-indexed line exposes an anchor \`<id>.line_<n>\` (e.g. \`from: "code1.line_2@right"\`).
+   - \`card\`: Title, optional icon (\`cpu\`, \`layers\`, \`database\`, \`cloud\`, \`lock\`, \`sparkles\`, \`terminal\`, \`code\`, \`server\`, \`globe\`, \`zap\`, \`shield\`, \`check\`, \`git\`, \`key\`, \`box\`, \`activity\`, \`hard-drive\`, \`wifi\`, \`sliders\`, \`send\`), badge, and body text.
+   - \`code-block\`: Displays syntax-highlighted code with \`highlightLines: [2, 3]\`. Each 1-indexed line exposes an anchor \`<id>.line_<n>\` (e.g. \`from: "code1.line_2@right"\`).
    - \`table\`: Memory layout, struct fields, or cache tables. Each cell exposes an anchor \`<id>.cell_<row>_<col>\`.
+   - \`bitfield\`: Network packet headers, CPU registers, or memory bit layouts (\`title\`, \`totalBits\`, \`fields: [{ name, bits, value, tone }]\`). Each field exposes an anchor \`<id>.field_<idx>\`.
+   - \`sequence\`: Protocol handshakes and RPC lifelines (\`title\`, \`actors: [{ id, label, sublabel, tone }]\`, \`messages: [{ from, to, label, type: "sync" | "async" | "reply", tone }]\`).
+   - \`cylinder\` & \`queue\`: 3D storage database cylinder and horizontal message queue pipe (\`label\`, \`sublabel\`, \`style\`).
    - \`terminal\`: CLI commands and outputs. Each 1-indexed line exposes an anchor \`<id>.line_<n>\`.
    - \`callout\`: Floating annotation pointing to \`target: "<node_or_subanchor_id>"\`.
 4. **Connections, Labels & Animation**:
@@ -562,14 +620,88 @@ export function getIllustrationJsonSchema()                          {
             
  
 
+function parseAngleDegrees(raw        )         {
+  const s = raw.trim().toLowerCase();
+  const val = parseFloat(s);
+  if (Number.isNaN(val)) return 0;
+  if (s.endsWith("turn")) return val * 360;
+  if (s.endsWith("rad")) return (val * 180) / Math.PI;
+  if (s.endsWith("grad")) return val * 0.9;
+  return val;
+}
+
+function hslToRgb(hDeg        , sPct        , lPct        )      {
+  const h = (((hDeg % 360) + 360) % 360) / 360;
+  const s = Math.max(0, Math.min(1, sPct / 100));
+  const l = Math.max(0, Math.min(1, lPct / 100));
+
+  if (s === 0) {
+    const v = Math.round(l * 255);
+    return { r: v, g: v, b: v };
+  }
+
+  const hue2rgb = (p        , q        , t        )         => {
+    let tt = t;
+    if (tt < 0) tt += 1;
+    if (tt > 1) tt -= 1;
+    if (tt < 1 / 6) return p + (q - p) * 6 * tt;
+    if (tt < 1 / 2) return q;
+    if (tt < 2 / 3) return p + (q - p) * (2 / 3 - tt) * 6;
+    return p;
+  };
+
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  return {
+    r: Math.round(hue2rgb(p, q, h + 1 / 3) * 255),
+    g: Math.round(hue2rgb(p, q, h) * 255),
+    b: Math.round(hue2rgb(p, q, h - 1 / 3) * 255),
+  };
+}
+
+function oklchToRgb(lVal        , cVal        , hDeg        )      {
+  const L = Math.max(0, Math.min(1, lVal));
+  const C = Math.max(0, cVal);
+  const hRad = (hDeg * Math.PI) / 180;
+  const a = C * Math.cos(hRad);
+  const b = C * Math.sin(hRad);
+
+  const l_ = L + 0.3963377774 * a + 0.2158037573 * b;
+  const m_ = L - 0.1055613458 * a - 0.0638541728 * b;
+  const s_ = L - 0.0894841775 * a - 1.291485548 * b;
+
+  const l = l_ * l_ * l_;
+  const m = m_ * m_ * m_;
+  const s = s_ * s_ * s_;
+
+  const rLin = +4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s;
+  const gLin = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s;
+  const bLin = -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s;
+
+  const toSrgb = (x        )         => {
+    const clamped = Math.max(0, Math.min(1, x));
+    const gamma =
+      clamped <= 0.0031308
+        ? 12.92 * clamped
+        : 1.055 * Math.pow(clamped, 1 / 2.4) - 0.055;
+    return Math.round(gamma * 255);
+  };
+
+  return {
+    r: toSrgb(rLin),
+    g: toSrgb(gLin),
+    b: toSrgb(bLin),
+  };
+}
+
 export function parseColorToRgb(input        , fallback     )      {
   const trimmed = input.trim();
   if (!trimmed) return fallback;
 
-  // Hex (#rgb or #rrggbb)
+  // 1. Hex (#rgb, #rgba, #rrggbb, #rrggbbaa)
   if (trimmed.startsWith("#")) {
     const hex = trimmed.slice(1);
-    if (hex.length === 3) {
+    if (hex.length === 3 || hex.length === 4) {
       return {
         r: parseInt(hex[0] + hex[0], 16),
         g: parseInt(hex[1] + hex[1], 16),
@@ -585,14 +717,68 @@ export function parseColorToRgb(input        , fallback     )      {
     }
   }
 
-  // rgb() or rgba()
-  const rgbMatch = trimmed.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
-  if (rgbMatch) {
-    return {
-      r: Number(rgbMatch[1]),
-      g: Number(rgbMatch[2]),
-      b: Number(rgbMatch[3]),
-    };
+  // 2. rgb() or rgba() — supports comma-separated and modern CSS Color 4 space-separated syntax
+  const rgbFunc = trimmed.match(/^rgba?\(\s*([^)]+)\s*\)$/i);
+  if (rgbFunc) {
+    const body = rgbFunc[1].split("/")[0].trim();
+    const parts = body.includes(",")
+      ? body.split(",").map((s) => s.trim())
+      : body.split(/\s+/);
+    if (parts.length >= 3) {
+      const parseChannel = (raw        )         => {
+        if (raw.endsWith("%")) {
+          return Math.round((parseFloat(raw) / 100) * 255);
+        }
+        return Math.round(parseFloat(raw));
+      };
+      const r = parseChannel(parts[0]);
+      const g = parseChannel(parts[1]);
+      const b = parseChannel(parts[2]);
+      if (!Number.isNaN(r) && !Number.isNaN(g) && !Number.isNaN(b)) {
+        return {
+          r: Math.max(0, Math.min(255, r)),
+          g: Math.max(0, Math.min(255, g)),
+          b: Math.max(0, Math.min(255, b)),
+        };
+      }
+    }
+  }
+
+  // 3. hsl() or hsla() — comma or space-separated
+  const hslFunc = trimmed.match(/^hsla?\(\s*([^)]+)\s*\)$/i);
+  if (hslFunc) {
+    const body = hslFunc[1].split("/")[0].trim();
+    const parts = body.includes(",")
+      ? body.split(",").map((s) => s.trim())
+      : body.split(/\s+/);
+    if (parts.length >= 3) {
+      const h = parseAngleDegrees(parts[0]);
+      const s = parseFloat(parts[1]);
+      const l = parseFloat(parts[2]);
+      if (!Number.isNaN(s) && !Number.isNaN(l)) {
+        return hslToRgb(h, s, l);
+      }
+    }
+  }
+
+  // 4. oklch(L C H [/ A]) — Tailwind v4 / modern design systems
+  const oklchFunc = trimmed.match(/^oklch\(\s*([^)]+)\s*\)$/i);
+  if (oklchFunc) {
+    const body = oklchFunc[1].split("/")[0].trim();
+    const parts = body.includes(",")
+      ? body.split(",").map((s) => s.trim())
+      : body.split(/\s+/);
+    if (parts.length >= 3) {
+      const rawL = parts[0];
+      const l = rawL.endsWith("%")
+        ? parseFloat(rawL) / 100
+        : parseFloat(rawL);
+      const c = parseFloat(parts[1]);
+      const h = parseAngleDegrees(parts[2]);
+      if (!Number.isNaN(l) && !Number.isNaN(c)) {
+        return oklchToRgb(l, c, h);
+      }
+    }
   }
 
   return fallback;
@@ -707,11 +893,17 @@ export function resolveThemeTokens(
         "--vp-c-bg",
         "--sl-color-bg",
       ]);
-      if (rawBg && rawBg.startsWith("#")) {
+      if (rawBg) {
         isDark = getRelativeLuminance(rawBg) < 0.45;
       }
     }
   }
+
+  const cssPreset = readFirstCssVar(styles, ["--ill-preset"])   
+                 
+               ;
+  const activePreset              = overridePreset || cssPreset || "clean";
+  const isBlueprint = activePreset === "blueprint";
 
   const mode                   = isDark ? "dark" : "light";
   const defaultBg = isDark ? "#0b0f19" : "#ffffff";
@@ -723,13 +915,16 @@ export function resolveThemeTokens(
   const defaultTextMuted = isDark ? "#94a3b8" : "#64748b";
   const defaultBorder = isDark ? "#2a364f" : "#cbd5e1";
 
-  const bg =
+  const rawBgColor =
     readFirstCssVar(styles, [
       "--ill-bg",
       "--blog-bg",
       "--vp-c-bg",
       "--sl-color-bg",
     ]) || defaultBg;
+  const bg = isBlueprint
+    ? mixColors(isDark ? "#082046" : "#e0f2fe", rawBgColor, 0.42)
+    : rawBgColor;
 
   const surface =
     readFirstCssVar(styles, [
@@ -782,10 +977,13 @@ export function resolveThemeTokens(
   };
 
   (Object.keys(baseToneDefaults)                  ).forEach((tone) => {
-    const main =
+    const rawMain =
       readFirstCssVar(styles, toneVarMap[tone]) || baseToneDefaults[tone];
-    const softWeight = isDark ? 0.16 : 0.11;
-    const borderWeight = isDark ? 0.55 : 0.45;
+    const main = rgbToHex(
+      parseColorToRgb(rawMain, parseColorToRgb(baseToneDefaults[tone], { r: 59, g: 130, b: 246 }))
+    );
+    const softWeight = isBlueprint ? (isDark ? 0.2 : 0.14) : isDark ? 0.16 : 0.11;
+    const borderWeight = isBlueprint ? (isDark ? 0.68 : 0.58) : isDark ? 0.55 : 0.45;
     tones[tone] = {
       main,
       softBg: mixColors(main, bg, softWeight),
@@ -810,32 +1008,32 @@ export function resolveThemeTokens(
     ]) ||
     'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace';
 
-  const cssPreset = readFirstCssVar(styles, ["--ill-preset"])   
-                 
-               ;
-
   return {
     mode,
     colors: {
       bg,
-      surface,
-      surfaceElevated: defaultSurfaceElevated,
+      surface: mixColors(surface, bg, 0.85),
+      surfaceElevated: isBlueprint
+        ? mixColors(isDark ? "#0c2b59" : "#f0f9ff", defaultSurfaceElevated, 0.5)
+        : defaultSurfaceElevated,
       codeBg: defaultCodeBg,
       codeText: defaultCodeText,
       text,
       textMuted,
       border,
-      gridDot: mixColors(textMuted, bg, isDark ? 0.25 : 0.22),
+      gridDot: isBlueprint
+        ? mixColors(tones.info.main, bg, isDark ? 0.26 : 0.22)
+        : mixColors(textMuted, bg, isDark ? 0.25 : 0.22),
       tones,
     },
     typography: {
-      fontSans,
+      fontSans: isBlueprint ? fontMono : fontSans,
       fontMono,
       baseFontSize: 13,
     },
     geometry: {
-      baseRadius: 10,
-      preset: overridePreset || cssPreset || "clean",
+      baseRadius: isBlueprint ? 3 : 10,
+      preset: activePreset,
       roughness: overrideRoughness ?? 1.25,
     },
   };
@@ -1283,6 +1481,55 @@ export function generateRoughEllipseStrokePath(
   return strokes.join(" ");
 }
 
+export function generateRoughLinePath(
+  x1        ,
+  y1        ,
+  x2        ,
+  y2        ,
+  seedKey        ,
+  roughness = 1.1
+)         {
+  const rng = new SeededRandom(seedKey);
+  return [
+    roughLineSegment(x1, y1, x2, y2, rng, roughness * 0.8),
+    roughLineSegment(x1, y1, x2, y2, rng, roughness * 0.5),
+  ].join(" ");
+}
+
+/**
+ * Generates a continuous hand-sketched companion stroke along a polyline of waypoints
+ * for Sketch-mode connection edges while keeping start/end tangents aligned with markers.
+ */
+export function generateRoughEdgeCompanionPath(
+  points                    ,
+  seedKey        ,
+  roughness = 1.15
+)         {
+  if (points.length < 2) return "";
+  const rng = new SeededRandom(seedKey);
+  const segs           = [];
+
+  for (let i = 0; i < points.length - 1; i++) {
+    const [x1, y1] = points[i];
+    const [x2, y2] = points[i + 1];
+    const len = Math.hypot(x2 - x1, y2 - y1);
+    if (len < 1) continue;
+    const jitter = Math.min(2.2, Math.max(0.5, len * 0.014)) * roughness;
+    const mid1X = x1 + (x2 - x1) * 0.33 + rng.offset(jitter);
+    const mid1Y = y1 + (y2 - y1) * 0.33 + rng.offset(jitter);
+    const mid2X = x1 + (x2 - x1) * 0.67 + rng.offset(jitter);
+    const mid2Y = y1 + (y2 - y1) * 0.67 + rng.offset(jitter);
+    if (i === 0) {
+      segs.push(`M ${x1.toFixed(1)} ${y1.toFixed(1)}`);
+    }
+    segs.push(
+      `C ${mid1X.toFixed(1)} ${mid1Y.toFixed(1)}, ${mid2X.toFixed(1)} ${mid2Y.toFixed(1)}, ${x2.toFixed(1)} ${y2.toFixed(1)}`
+    );
+  }
+
+  return segs.join(" ");
+}
+
 // --- src/compiler/layout-solver.ts ---
 /**
  * Three-Tier Hybrid Layout Solver & Compound Component Macro Expander
@@ -1303,6 +1550,109 @@ function normalizePadding(
   if (typeof pad === "number") return [pad, pad, pad, pad];
   if (pad.length === 2) return [pad[0], pad[1], pad[0], pad[1]];
   return pad;
+}
+
+const CODE_KEYWORDS = new Set([
+  "import",
+  "export",
+  "from",
+  "const",
+  "let",
+  "var",
+  "function",
+  "return",
+  "if",
+  "else",
+  "for",
+  "while",
+  "switch",
+  "case",
+  "break",
+  "continue",
+  "class",
+  "interface",
+  "type",
+  "extends",
+  "implements",
+  "new",
+  "async",
+  "await",
+  "try",
+  "catch",
+  "throw",
+  "def",
+  "fn",
+  "pub",
+  "struct",
+  "enum",
+  "impl",
+  "match",
+  "use",
+  "package",
+  "func",
+  "go",
+  "defer",
+  "select",
+  "chan",
+  "true",
+  "false",
+  "null",
+  "undefined",
+  "nil",
+  "void",
+]);
+
+function tokenizeCodeLine(
+  line        ,
+  baseColor        
+)                    {
+  if (!line) return [{ text: "", color: baseColor }];
+
+  // Full-line comment or markdown heading/fence
+  const trimmed = line.trimStart();
+  if (trimmed.startsWith("//") || trimmed.startsWith("--")) {
+    return [{ text: line, color: "#64748b" }];
+  }
+  if (trimmed.startsWith("```")) {
+    return [{ text: line, color: "#38bdf8", fontWeight: 600 }];
+  }
+  if (trimmed.startsWith("#")) {
+    return [{ text: line, color: "#94a3b8", fontWeight: 600 }];
+  }
+
+  const tokens                    = [];
+  const regex =
+    /(\/\/.*$|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`|\b0x[0-9a-fA-F]+\b|\b\d+(?:\.\d+)?\b|\b[A-Za-z_][A-Za-z0-9_-]*\b(?=\s*:)|\b[A-Za-z_][A-Za-z0-9_]*\b|\s+|[^\s"A-Za-z0-9_]+)/g;
+
+  let match                        ;
+  while ((match = regex.exec(line)) !== null) {
+    const raw = match[0];
+    if (raw.startsWith("//")) {
+      tokens.push({ text: raw, color: "#64748b" });
+    } else if (
+      (raw.startsWith('"') && raw.endsWith('"')) ||
+      (raw.startsWith("'") && raw.endsWith("'")) ||
+      (raw.startsWith("`") && raw.endsWith("`"))
+    ) {
+      tokens.push({ text: raw, color: "#34d399" });
+    } else if (/^(0x[0-9a-fA-F]+|\d+(?:\.\d+)?)$/.test(raw)) {
+      tokens.push({ text: raw, color: "#fb923c" });
+    } else if (
+      /^[A-Za-z_][A-Za-z0-9_-]*$/.test(raw) &&
+      line.slice(match.index + raw.length).trimStart().startsWith(":")
+    ) {
+      // Property / YAML key
+      tokens.push({ text: raw, color: "#38bdf8" });
+    } else if (CODE_KEYWORDS.has(raw)) {
+      tokens.push({ text: raw, color: "#c084fc", fontWeight: 600 });
+    } else if (/^[A-Z][A-Za-z0-9_]*$/.test(raw)) {
+      tokens.push({ text: raw, color: "#fbbf24" });
+    } else {
+      tokens.push({ text: raw, color: baseColor });
+    }
+  }
+
+  return tokens.length > 0 ? tokens : [{ text: line, color: baseColor }];
 }
 
 export class HybridLayoutSolver {
@@ -1555,10 +1905,16 @@ export class HybridLayoutSolver {
         return this.buildPolygonNode(spec);
       case "path":
         return this.buildPathNode(spec);
+      case "bitfield":
+        return this.buildBitfieldNode(spec);
+      case "sequence":
+        return this.buildSequenceNode(spec);
       case "rect":
       case "circle":
       case "ellipse":
       case "diamond":
+      case "cylinder":
+      case "queue":
       default:
         return this.buildPrimitiveShapeNode(spec                   );
     }
@@ -1924,15 +2280,19 @@ export class HybridLayoutSolver {
         textAnchor: "end",
       });
 
-      // Code text
+      // Code text with lightweight syntax highlighting tokens
+      const baseCodeColor = isHighlighted
+        ? "#f8fafc"
+        : this.theme.colors.codeText;
       decorations.push({
         kind: "text",
         x: padX + gutterWidth,
         y: lineY + 15,
         text: lineText,
+        tokens: tokenizeCodeLine(lineText, baseCodeColor),
         fontFamily: fontMono,
         fontSize: codeFontSize,
-        textColor: isHighlighted ? "#f8fafc" : this.theme.colors.codeText,
+        textColor: baseCodeColor,
       });
     });
 
@@ -2820,6 +3180,557 @@ export class HybridLayoutSolver {
     };
   }
 
+          buildBitfieldNode(spec                     )            {
+    const id = spec.id || this.nextId("bitfield");
+    const style = resolveNodeStyle(
+      spec.style,
+      this.theme,
+      "outlined",
+      "primary"
+    );
+    const fontSans = this.theme.typography.fontSans;
+    const fontMono = this.theme.typography.fontMono;
+    const fields = spec.fields || [];
+
+    const titleBarHeight = spec.title ? 30 : 0;
+    const rulerHeight = 20;
+    const cellHeight = 46;
+    const padX = 12;
+
+    const fieldWidths           = [];
+    const bitCounts           = [];
+
+    for (const f of fields) {
+      const bitNum =
+        typeof f.bits === "number"
+          ? Math.max(1, f.bits)
+          : parseInt(String(f.bits), 10) || 8;
+      bitCounts.push(bitNum);
+
+      const nameW = this.measurer.measureLineWidth(f.name, 12, fontMono, 600, true);
+      const valW = f.value
+        ? this.measurer.measureLineWidth(f.value, 10.5, fontMono, 400, true)
+        : 0;
+      const bitLabelW = this.measurer.measureLineWidth(
+        typeof f.bits === "number" ? `${f.bits}b` : String(f.bits),
+        9.5,
+        fontMono,
+        500,
+        true
+      );
+      const minW = Math.max(nameW, valW + bitLabelW + 10, 56) + padX * 2;
+      const propW = Math.min(200, Math.max(minW, bitNum * 7));
+      fieldWidths.push(Math.ceil(propW));
+    }
+
+    const rawTotalW = Math.max(180, fieldWidths.reduce((a, b) => a + b, 0));
+    const width = typeof spec.width === "number" ? spec.width : rawTotalW;
+    const height =
+      typeof spec.height === "number"
+        ? spec.height
+        : titleBarHeight + rulerHeight + cellHeight;
+
+    const decorations                        = [];
+    const subAnchors                        = [];
+    const tonePalette = this.theme.colors.tones[style.tone];
+
+    let cursorY = 0;
+
+    if (spec.title) {
+      decorations.push({
+        kind: "rect",
+        x: 1,
+        y: 1,
+        width: width - 2,
+        height: titleBarHeight,
+        rx: Math.max(0, style.radius - 1),
+        fill: tonePalette.softBg,
+      });
+      decorations.push({
+        kind: "text",
+        x: padX,
+        y: titleBarHeight / 2 + 4,
+        text: spec.title,
+        fontFamily: fontSans,
+        fontSize: 12,
+        fontWeight: 600,
+        textColor: style.textColor,
+      });
+      if (spec.totalBits) {
+        decorations.push({
+          kind: "text",
+          x: width - padX,
+          y: titleBarHeight / 2 + 4,
+          text: `${spec.totalBits}-bit`,
+          fontFamily: fontMono,
+          fontSize: 10.5,
+          fontWeight: 600,
+          textColor: tonePalette.main,
+          textAnchor: "end",
+        });
+      }
+      decorations.push({
+        kind: "line",
+        x: 0,
+        y: titleBarHeight,
+        x2: width,
+        y2: titleBarHeight,
+        stroke: style.stroke,
+        strokeWidth: 1,
+      });
+      cursorY += titleBarHeight;
+    }
+
+    // Bit offset ruler strip
+    decorations.push({
+      kind: "rect",
+      x: 1,
+      y: cursorY + 1,
+      width: width - 2,
+      height: rulerHeight - 1,
+      fill: this.theme.colors.surface,
+    });
+    decorations.push({
+      kind: "line",
+      x: 0,
+      y: cursorY + rulerHeight,
+      x2: width,
+      y2: cursorY + rulerHeight,
+      stroke: this.theme.colors.border,
+      strokeWidth: 1,
+    });
+
+    const cellY = cursorY + rulerHeight;
+    let colX = 0;
+    let bitCursor = 0;
+
+    fields.forEach((f, idx) => {
+      const fw =
+        idx === fields.length - 1
+          ? Math.max(fieldWidths[idx], width - colX)
+          : fieldWidths[idx];
+      const bitSpan = bitCounts[idx];
+      const fTone = f.tone || style.tone;
+      const fPalette = this.theme.colors.tones[fTone];
+      const anchorId = `${id}.field_${idx}`;
+
+      subAnchors.push({
+        anchorId,
+        x: colX,
+        y: cellY,
+        width: fw,
+        height: cellHeight,
+        highlight: Boolean(f.tone),
+        tone: fTone,
+      });
+
+      // Start bit offset label in ruler
+      decorations.push({
+        kind: "text",
+        x: colX + 6,
+        y: cursorY + 13.5,
+        text: String(bitCursor),
+        fontFamily: fontMono,
+        fontSize: 9.5,
+        textColor: style.mutedTextColor,
+      });
+
+      if (idx === fields.length - 1) {
+        decorations.push({
+          kind: "text",
+          x: colX + fw - 6,
+          y: cursorY + 13.5,
+          text: String(bitCursor + bitSpan - 1),
+          fontFamily: fontMono,
+          fontSize: 9.5,
+          textColor: style.mutedTextColor,
+          textAnchor: "end",
+        });
+      }
+
+      // Field background cell
+      decorations.push({
+        kind: "table-cell",
+        anchorId,
+        x: colX + 1,
+        y: cellY + 1,
+        width: fw - 2,
+        height: cellHeight - 2,
+        fill: f.tone ? fPalette.softBg : "transparent",
+      });
+
+      if (idx > 0) {
+        decorations.push({
+          kind: "line",
+          x: colX,
+          y: cursorY,
+          x2: colX,
+          y2: cellY + cellHeight,
+          stroke: this.theme.colors.border,
+          strokeWidth: 1,
+        });
+      }
+
+      // Field name
+      decorations.push({
+        kind: "text",
+        x: colX + fw / 2,
+        y: f.value ? cellY + 18 : cellY + 23,
+        text: f.name,
+        fontFamily: fontMono,
+        fontSize: 12,
+        fontWeight: 600,
+        textColor: f.tone ? fPalette.main : style.textColor,
+        textAnchor: "middle",
+      });
+
+      // Bit width / value sublabel
+      const subText = f.value
+        ? `${f.value} (${typeof f.bits === "number" ? `${f.bits}b` : f.bits})`
+        : typeof f.bits === "number"
+        ? `${f.bits} bits`
+        : String(f.bits);
+      decorations.push({
+        kind: "text",
+        x: colX + fw / 2,
+        y: cellY + 35,
+        text: subText,
+        fontFamily: fontMono,
+        fontSize: 10,
+        textColor: style.mutedTextColor,
+        textAnchor: "middle",
+      });
+
+      colX += fw;
+      bitCursor += bitSpan;
+    });
+
+    return {
+      id,
+      type: "bitfield",
+      x: spec.x ?? 0,
+      y: spec.y ?? 0,
+      width,
+      height,
+      style,
+      shape: "rect",
+      decorations,
+      subAnchors,
+      children: [],
+    };
+  }
+
+          buildSequenceNode(spec                     )            {
+    const id = spec.id || this.nextId("seq");
+    const style = resolveNodeStyle(
+      spec.style,
+      this.theme,
+      "outlined",
+      "neutral"
+    );
+    const fontSans = this.theme.typography.fontSans;
+    const fontMono = this.theme.typography.fontMono;
+    const actors = spec.actors || [];
+    const messages = spec.messages || [];
+
+    const titleBarHeight = spec.title ? 32 : 0;
+    const padX = 24;
+    const padTop = 16;
+    const padBottom = 20;
+    const actorBoxH = 40;
+    const msgRowH = 44;
+
+    // Measure minimum actor widths and message label widths between actors
+    const actorWidths = actors.map((a) => {
+      const lw = this.measurer.measureLineWidth(a.label, 12.5, fontSans, 600);
+      const sw = a.sublabel
+        ? this.measurer.measureLineWidth(a.sublabel, 10, fontMono, 400, true)
+        : 0;
+      return Math.max(96, Math.ceil(Math.max(lw, sw) + 28));
+    });
+
+    const actorIndexById = new Map                ();
+    actors.forEach((a, idx) => actorIndexById.set(a.id, idx));
+
+    const colGaps = new Array        (Math.max(0, actors.length - 1)).fill(120);
+    for (const msg of messages) {
+      const i1 = actorIndexById.get(msg.from) ?? 0;
+      const i2 = actorIndexById.get(msg.to) ?? 0;
+      const lw =
+        this.measurer.measureLineWidth(msg.label, 11, fontSans, 600) + 44;
+      if (Math.abs(i2 - i1) === 1) {
+        const minIdx = Math.min(i1, i2);
+        colGaps[minIdx] = Math.max(colGaps[minIdx], lw);
+      }
+    }
+
+    const actorCentersX           = [];
+    let cursorX = padX + (actorWidths[0] || 96) / 2;
+    for (let i = 0; i < actors.length; i++) {
+      actorCentersX.push(cursorX);
+      if (i < actors.length - 1) {
+        cursorX +=
+          actorWidths[i] / 2 +
+          Math.max(
+            colGaps[i],
+            (actorWidths[i] + actorWidths[i + 1]) / 2 + 32
+          );
+      }
+    }
+
+    const lastActorHalf =
+      actors.length > 0 ? actorWidths[actors.length - 1] / 2 : 60;
+    const totalW = Math.max(240, Math.ceil(cursorX + lastActorHalf + padX));
+    const width = typeof spec.width === "number" ? spec.width : totalW;
+    const timelineStartY = titleBarHeight + padTop + actorBoxH;
+    const timelineEndY =
+      timelineStartY + Math.max(1, messages.length) * msgRowH + 14;
+    const height =
+      typeof spec.height === "number"
+        ? spec.height
+        : timelineEndY + padBottom;
+
+    const decorations                        = [];
+    const subAnchors                        = [];
+
+    if (spec.title) {
+      decorations.push({
+        kind: "rect",
+        x: 1,
+        y: 1,
+        width: width - 2,
+        height: titleBarHeight,
+        rx: Math.max(0, style.radius - 1),
+        fill: this.theme.colors.surface,
+      });
+      decorations.push({
+        kind: "text",
+        x: 16,
+        y: titleBarHeight / 2 + 4,
+        text: spec.title,
+        fontFamily: fontSans,
+        fontSize: 12,
+        fontWeight: 600,
+        textColor: style.textColor,
+      });
+      decorations.push({
+        kind: "line",
+        x: 0,
+        y: titleBarHeight,
+        x2: width,
+        y2: titleBarHeight,
+        stroke: style.stroke,
+        strokeWidth: 1,
+      });
+    }
+
+    // Render actor headers & vertical lifelines
+    actors.forEach((actor, idx) => {
+      const cx = actorCentersX[idx];
+      const aw = actorWidths[idx];
+      const ax = cx - aw / 2;
+      const ay = titleBarHeight + padTop;
+      const aTone = actor.tone || "primary";
+      const aPalette = this.theme.colors.tones[aTone];
+      const actorAnchorId = `${id}.${actor.id}`;
+
+      subAnchors.push({
+        anchorId: actorAnchorId,
+        x: ax,
+        y: ay,
+        width: aw,
+        height: actorBoxH,
+        highlight: true,
+        tone: aTone,
+      });
+
+      // Vertical lifeline
+      decorations.push({
+        kind: "line",
+        x: cx,
+        y: ay + actorBoxH,
+        x2: cx,
+        y2: timelineEndY,
+        stroke: this.theme.colors.border,
+        strokeWidth: 1.25,
+        strokeDasharray: "4 4",
+      });
+
+      // Actor header card
+      decorations.push({
+        kind: "rect",
+        x: ax,
+        y: ay,
+        width: aw,
+        height: actorBoxH,
+        rx: 7,
+        fill: aPalette.softBg,
+        stroke: aPalette.softBorder,
+        strokeWidth: 1.5,
+      });
+
+      decorations.push({
+        kind: "text",
+        x: cx,
+        y: actor.sublabel ? ay + 16 : ay + 24,
+        text: actor.label,
+        fontFamily: fontSans,
+        fontSize: 12,
+        fontWeight: 600,
+        textColor: style.textColor,
+        textAnchor: "middle",
+      });
+
+      if (actor.sublabel) {
+        decorations.push({
+          kind: "text",
+          x: cx,
+          y: ay + 31,
+          text: actor.sublabel,
+          fontFamily: fontMono,
+          fontSize: 10,
+          textColor: aPalette.main,
+          textAnchor: "middle",
+        });
+      }
+    });
+
+    // Render sequence messages
+    messages.forEach((msg, mIdx) => {
+      const fromIdx = actorIndexById.get(msg.from) ?? 0;
+      const toIdx = actorIndexById.get(msg.to) ?? 0;
+      const x1 = actorCentersX[fromIdx] ?? padX;
+      const x2 = actorCentersX[toIdx] ?? padX;
+      const msgY = timelineStartY + 26 + mIdx * msgRowH;
+      const mTone = msg.tone || (msg.type === "reply" ? "neutral" : "primary");
+      const mColor =
+        mTone === "neutral"
+          ? this.theme.colors.textMuted
+          : this.theme.colors.tones[mTone].main;
+      const msgAnchorId = `${id}.msg_${mIdx + 1}`;
+
+      subAnchors.push({
+        anchorId: msgAnchorId,
+        x: Math.min(x1, x2),
+        y: msgY - 18,
+        width: Math.max(40, Math.abs(x2 - x1)),
+        height: 28,
+        tone: mTone,
+      });
+
+      // Activation dots on lifelines
+      decorations.push({
+        kind: "circle",
+        x: x1,
+        y: msgY,
+        r: 3,
+        fill: mColor,
+      });
+
+      if (fromIdx === toIdx) {
+        // Self-call message loop
+        const loopW = 36;
+        const loopH = 14;
+        decorations.push({
+          kind: "line",
+          x: x1,
+          y: msgY - 4,
+          x2: x1 + loopW,
+          y2: msgY - 4,
+          stroke: mColor,
+          strokeWidth: 1.5,
+        });
+        decorations.push({
+          kind: "line",
+          x: x1 + loopW,
+          y: msgY - 4,
+          x2: x1 + loopW,
+          y2: msgY + loopH,
+          stroke: mColor,
+          strokeWidth: 1.5,
+        });
+        decorations.push({
+          kind: "line",
+          x: x1 + loopW,
+          y: msgY + loopH,
+          x2: x1 + 4,
+          y2: msgY + loopH,
+          stroke: mColor,
+          strokeWidth: 1.5,
+        });
+        decorations.push({
+          kind: "text",
+          x: x1 + loopW + 8,
+          y: msgY + 6,
+          text: msg.label,
+          fontFamily: fontSans,
+          fontSize: 11,
+          fontWeight: 600,
+          textColor: mColor,
+        });
+      } else {
+        const dir = x2 >= x1 ? 1 : -1;
+        const endX = x2 - dir * 5;
+        decorations.push({
+          kind: "line",
+          x: x1,
+          y: msgY,
+          x2: endX,
+          y2: msgY,
+          stroke: mColor,
+          strokeWidth: 1.6,
+          strokeDasharray: msg.type === "reply" ? "5 4" : undefined,
+        });
+        // Arrowhead chevron lines
+        decorations.push({
+          kind: "line",
+          x: x2 - dir * 8,
+          y: msgY - 4,
+          x2: x2 - dir * 1,
+          y2: msgY,
+          stroke: mColor,
+          strokeWidth: 1.8,
+        });
+        decorations.push({
+          kind: "line",
+          x: x2 - dir * 8,
+          y: msgY + 4,
+          x2: x2 - dir * 1,
+          y2: msgY,
+          stroke: mColor,
+          strokeWidth: 1.8,
+        });
+
+        const midX = (x1 + x2) / 2;
+        decorations.push({
+          kind: "text",
+          x: midX,
+          y: msgY - 7,
+          text: msg.label,
+          fontFamily: fontSans,
+          fontSize: 11,
+          fontWeight: 600,
+          textColor: mColor,
+          textAnchor: "middle",
+        });
+      }
+    });
+
+    return {
+      id,
+      type: "sequence",
+      x: spec.x ?? 0,
+      y: spec.y ?? 0,
+      width,
+      height,
+      style,
+      shape: "rect",
+      decorations,
+      subAnchors,
+      children: [],
+    };
+  }
+
           buildPrimitiveShapeNode(spec                 )            {
     const id = spec.id || this.nextId(spec.type);
     const style = resolveNodeStyle(spec.style, this.theme, "soft", "primary");
@@ -2831,12 +3742,19 @@ export class HybridLayoutSolver {
       ? this.measurer.measureLineWidth(spec.sublabel, 11, fontSans, 400)
       : 0;
 
-    const minW = spec.type === "diamond" ? Math.max(labelW, subW) + 56 : Math.max(labelW, subW) + 36;
+    const minW =
+      spec.type === "diamond"
+        ? Math.max(labelW, subW) + 56
+        : spec.type === "queue"
+        ? Math.max(labelW, subW) + 52
+        : Math.max(labelW, subW) + 36;
     const width =
       typeof spec.width === "number"
         ? spec.width
         : spec.type === "circle"
         ? Math.max(minW, 76)
+        : spec.type === "queue"
+        ? Math.max(minW, 136)
         : Math.max(minW, 120);
     const height =
       typeof spec.height === "number"
@@ -2845,16 +3763,25 @@ export class HybridLayoutSolver {
         ? width
         : spec.type === "diamond"
         ? 76
+        : spec.type === "cylinder"
+        ? spec.sublabel
+          ? 82
+          : 68
         : spec.sublabel
         ? 64
         : 48;
 
     const decorations                        = [];
+    const textCenterY =
+      spec.type === "cylinder" ? height / 2 + 7 : height / 2;
+    const textCenterX =
+      spec.type === "queue" ? width / 2 - 4 : width / 2;
+
     if (spec.label) {
       decorations.push({
         kind: "text",
-        x: width / 2,
-        y: spec.sublabel ? height / 2 - 2 : height / 2 + 4.5,
+        x: textCenterX,
+        y: spec.sublabel ? textCenterY - 2 : textCenterY + 4.5,
         text: spec.label,
         fontFamily: fontSans,
         fontSize: 13,
@@ -2866,8 +3793,8 @@ export class HybridLayoutSolver {
     if (spec.sublabel) {
       decorations.push({
         kind: "text",
-        x: width / 2,
-        y: height / 2 + 15,
+        x: textCenterX,
+        y: textCenterY + 15,
         text: spec.sublabel,
         fontFamily: fontSans,
         fontSize: 11,
@@ -5427,7 +6354,8 @@ export function compileIllustration(
 // --- src/runtime/svg-dom-renderer.ts ---
 /**
  * Reactive SVG Renderer for SceneGraph
- * Supports Clean & Sketch presets, Sub-Anchor Focus Highlighting, and Animated Data Flows.
+ * Supports Clean, Sketch & Blueprint presets, Syntax-Highlighted Code Blocks,
+ * Sub-Anchor Focus Highlighting, and Animated Data Flows.
  */
 
 function escapeXml(str        )         {
@@ -5452,6 +6380,14 @@ const ICON_PATHS                         = {
   zap: `<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>`,
   shield: `<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>`,
   check: `<polyline points="20 6 9 17 4 12"/>`,
+  git: `<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" y1="9" x2="6" y2="21"/>`,
+  key: `<circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/>`,
+  box: `<path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/>`,
+  activity: `<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>`,
+  "hard-drive": `<line x1="22" y1="12" x2="2" y2="12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><line x1="6" y1="16" x2="6.01" y2="16"/><line x1="10" y1="16" x2="10.01" y2="16"/>`,
+  wifi: `<path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/>`,
+  sliders: `<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>`,
+  send: `<line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>`,
 };
 
 function renderIconSvg(
@@ -5467,7 +6403,13 @@ function renderIconSvg(
   return `<g transform="translate(${x.toFixed(1)}, ${y.toFixed(1)}) scale(${scale.toFixed(3)})" fill="none" stroke="${strokeColor}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${inner}</g>`;
 }
 
-function renderDecoration(dec                     )         {
+function renderDecoration(
+  dec                     ,
+  rough         ,
+  nodeId        ,
+  idx        ,
+  roughness        
+)         {
   switch (dec.kind) {
     case "rect":
       return `<rect x="${dec.x}" y="${dec.y}" width="${dec.width || 0}" height="${dec.height || 0}" rx="${dec.rx || 0}" fill="${dec.fill || "none"}" stroke="${dec.stroke || "none"}" stroke-width="${dec.strokeWidth || 0}" />`;
@@ -5479,8 +6421,23 @@ function renderDecoration(dec                     )         {
     case "circle":
       return `<circle cx="${dec.x}" cy="${dec.y}" r="${dec.r || 4}" fill="${dec.fill || "none"}" stroke="${dec.stroke || "none"}" />`;
 
-    case "line":
-      return `<line x1="${dec.x}" y1="${dec.y}" x2="${dec.x2 ?? dec.x}" y2="${dec.y2 ?? dec.y}" stroke="${dec.stroke || "currentColor"}" stroke-width="${dec.strokeWidth || 1}" />`;
+    case "line": {
+      const dashAttr = dec.strokeDasharray
+        ? ` stroke-dasharray="${dec.strokeDasharray}"`
+        : "";
+      if (rough && !dec.strokeDasharray) {
+        const d = generateRoughLinePath(
+          dec.x,
+          dec.y,
+          dec.x2 ?? dec.x,
+          dec.y2 ?? dec.y,
+          `${nodeId}_line_${idx}`,
+          roughness * 0.65
+        );
+        return `<path d="${d}" fill="none" stroke="${dec.stroke || "currentColor"}" stroke-width="${dec.strokeWidth || 1}" />`;
+      }
+      return `<line x1="${dec.x}" y1="${dec.y}" x2="${dec.x2 ?? dec.x}" y2="${dec.y2 ?? dec.y}" stroke="${dec.stroke || "currentColor"}" stroke-width="${dec.strokeWidth || 1}"${dashAttr} />`;
+    }
 
     case "icon":
       return renderIconSvg(
@@ -5491,8 +6448,23 @@ function renderDecoration(dec                     )         {
         dec.stroke || "currentColor"
       );
 
-    case "text":
+    case "text": {
+      if (dec.tokens && dec.tokens.length > 0) {
+        const tspans = dec.tokens
+          .map((tok) => {
+            const fillAttr = tok.color
+              ? ` fill="${tok.color}"`
+              : "";
+            const weightAttr = tok.fontWeight
+              ? ` font-weight="${tok.fontWeight}"`
+              : "";
+            return `<tspan${fillAttr}${weightAttr}>${escapeXml(tok.text)}</tspan>`;
+          })
+          .join("");
+        return `<text xml:space="preserve" x="${dec.x}" y="${dec.y}" fill="${dec.textColor || "currentColor"}" font-family="${escapeXml(dec.fontFamily || "sans-serif")}" font-size="${dec.fontSize || 12}px" font-weight="${dec.fontWeight || 400}" text-anchor="${dec.textAnchor || "start"}">${tspans}</text>`;
+      }
       return `<text x="${dec.x}" y="${dec.y}" fill="${dec.textColor || "currentColor"}" font-family="${escapeXml(dec.fontFamily || "sans-serif")}" font-size="${dec.fontSize || 12}px" font-weight="${dec.fontWeight || 400}" text-anchor="${dec.textAnchor || "start"}">${escapeXml(dec.text || "")}</text>`;
+    }
 
     default:
       return "";
@@ -5512,6 +6484,51 @@ function renderNodeShape(node           , roughness        )         {
       : style.elevation === "sm"
       ? ` filter="url(#ill-shadow-sm)"`
       : "";
+
+  if (shape === "cylinder") {
+    const ry = Math.min(13, Math.max(8, Math.round(h * 0.16)));
+    const bodyD = `M 0 ${ry} A ${w / 2} ${ry} 0 0 1 ${w} ${ry} L ${w} ${h - ry} A ${w / 2} ${ry} 0 0 1 0 ${h - ry} Z`;
+    const topCapD = `M 0 ${ry} A ${w / 2} ${ry} 0 0 0 ${w} ${ry}`;
+    const ring2D =
+      h >= 68
+        ? `<path d="M 0 ${ry + 8} A ${w / 2} ${ry} 0 0 0 ${w} ${ry + 8}" fill="none" stroke="${style.stroke}" stroke-width="${style.strokeWidth * 0.75}" opacity="0.55" />`
+        : "";
+    if (style.rough) {
+      const topRough = generateRoughEllipseStrokePath(
+        w / 2,
+        ry,
+        w / 2 - 1,
+        ry - 1,
+        `${node.id}_cyl_top`,
+        roughness * 0.85
+      );
+      const leftRough = generateRoughLinePath(
+        1,
+        ry,
+        1,
+        h - ry,
+        `${node.id}_cyl_l`,
+        roughness * 0.85
+      );
+      const rightRough = generateRoughLinePath(
+        w - 1,
+        ry,
+        w - 1,
+        h - ry,
+        `${node.id}_cyl_r`,
+        roughness * 0.85
+      );
+      return `<path d="${bodyD}" fill="${style.fill}" stroke="${style.stroke}" stroke-width="${style.strokeWidth}"${dashAttr}${filterAttr} /><path d="${topRough} ${leftRough} ${rightRough}" fill="none" stroke="${style.stroke}" stroke-width="${style.strokeWidth * 0.9}" />${ring2D}`;
+    }
+    return `<path d="${bodyD}" fill="${style.fill}" stroke="${style.stroke}" stroke-width="${style.strokeWidth}"${dashAttr}${filterAttr} /><path d="${topCapD}" fill="none" stroke="${style.stroke}" stroke-width="${style.strokeWidth}" />${ring2D}`;
+  }
+
+  if (shape === "queue") {
+    const rx = Math.min(13, Math.max(8, Math.round(w * 0.1)));
+    const bodyD = `M ${rx} 0 L ${w - rx} 0 A ${rx} ${h / 2} 0 0 1 ${w - rx} ${h} L ${rx} ${h} A ${rx} ${h / 2} 0 0 1 ${rx} 0 Z`;
+    const rightCapD = `M ${w - rx} 0 A ${rx} ${h / 2} 0 0 0 ${w - rx} ${h}`;
+    return `<path d="${bodyD}" fill="${style.fill}" stroke="${style.stroke}" stroke-width="${style.strokeWidth}"${dashAttr}${filterAttr} /><path d="${rightCapD}" fill="none" stroke="${style.stroke}" stroke-width="${style.strokeWidth}" />`;
+  }
 
   if (style.rough) {
     if (shape === "circle" || shape === "ellipse") {
@@ -5611,7 +6628,11 @@ function renderSceneNodeTree(
   anchorRegistry                             
 )         {
   const shapeSvg = renderNodeShape(node, roughness);
-  const decsSvg = node.decorations.map(renderDecoration).join("");
+  const decsSvg = node.decorations
+    .map((dec, idx) =>
+      renderDecoration(dec, node.style.rough, node.id, idx, roughness)
+    )
+    .join("");
 
   // Note: child.x and child.y are already converted to world coordinates in LayoutSolver
   const childrenSvg = node.children
@@ -5641,6 +6662,18 @@ function renderEdge(edge           , scene            )         {
   const dashAttr = dashVal ? ` stroke-dasharray="${dashVal}"` : "";
   const flowClass = isFlowAnim ? " ai-ill-edge-flow" : "";
 
+  let roughCompanionSvg = "";
+  if (scene.preset === "sketch" && edge.points.length >= 2) {
+    const companionD = generateRoughEdgeCompanionPath(
+      edge.points,
+      `${edge.id}_rough`,
+      scene.theme.geometry.roughness
+    );
+    if (companionD) {
+      roughCompanionSvg = `<path class="ai-ill-edge-rough" d="${companionD}" fill="none" stroke="${edge.stroke}" stroke-width="${(edge.strokeWidth * 0.8).toFixed(2)}" stroke-linecap="round" opacity="0.55"${dashAttr} />`;
+    }
+  }
+
   let pulseParticles = "";
   if (
     edge.animation.type === "pulse" ||
@@ -5665,8 +6698,9 @@ function renderEdge(edge           , scene            )         {
       edge.tone === "neutral"
         ? scene.theme.colors.border
         : scene.theme.colors.tones[edge.tone].softBorder;
+    const labelRx = scene.preset === "blueprint" ? 3 : 11;
     labelSvg = `<g class="ai-ill-edge-label">
-      <rect x="${lb.x.toFixed(1)}" y="${lb.y.toFixed(1)}" width="${lb.width.toFixed(1)}" height="${lb.height.toFixed(1)}" rx="11" fill="${scene.theme.colors.surfaceElevated}" stroke="${labelStroke}" stroke-width="1" filter="url(#ill-shadow-sm)" />
+      <rect x="${lb.x.toFixed(1)}" y="${lb.y.toFixed(1)}" width="${lb.width.toFixed(1)}" height="${lb.height.toFixed(1)}" rx="${labelRx}" fill="${scene.theme.colors.surfaceElevated}" stroke="${labelStroke}" stroke-width="1" filter="url(#ill-shadow-sm)" />
       <text x="${(lb.x + lb.width / 2).toFixed(1)}" y="${(lb.y + lb.height / 2 + 3.8).toFixed(1)}" fill="${edge.tone === "neutral" ? scene.theme.colors.textMuted : edge.stroke}" font-family="${escapeXml(scene.theme.typography.fontSans)}" font-size="11px" font-weight="600" text-anchor="middle">${escapeXml(edge.label)}</text>
     </g>`;
   }
@@ -5674,6 +6708,7 @@ function renderEdge(edge           , scene            )         {
   return `<g class="ai-ill-edge" data-edge-id="${escapeXml(edge.id)}" data-from="${escapeXml(edge.from)}" data-to="${escapeXml(edge.to)}">
     <!-- Invisible wider hit target for easy hover -->
     <path d="${edge.pathD}" fill="none" stroke="transparent" stroke-width="14" />
+    ${roughCompanionSvg}
     <path class="ai-ill-edge-path${flowClass}" d="${edge.pathD}" fill="none" stroke="${edge.stroke}" stroke-width="${edge.strokeWidth}" stroke-linecap="round" stroke-linejoin="round"${dashAttr}${markerStart}${markerEnd} />
     ${pulseParticles}
     ${labelSvg}
@@ -5705,18 +6740,24 @@ export function renderSceneGraphToSvgString(scene            )         {
 
   let bgPatternDef = "";
   let bgRectSvg = "";
-  if (background !== "transparent") {
-    if (background === "dots") {
+  const isBlueprint = scene.preset === "blueprint";
+  const effectiveBg = isBlueprint && background === "dots" ? "grid" : background;
+
+  if (effectiveBg !== "transparent") {
+    if (effectiveBg === "dots") {
       bgPatternDef = `<pattern id="ill-bg-dots" x="0" y="0" width="20" height="20" patternUnits="userSpaceOnUse">
         <circle cx="2" cy="2" r="1.15" fill="${theme.colors.gridDot}" />
       </pattern>`;
       bgRectSvg = `<rect width="${width}" height="${height}" rx="12" fill="${theme.colors.bg}" /><rect width="${width}" height="${height}" rx="12" fill="url(#ill-bg-dots)" />`;
-    } else if (background === "grid") {
+    } else if (effectiveBg === "grid") {
       bgPatternDef = `<pattern id="ill-bg-grid" x="0" y="0" width="24" height="24" patternUnits="userSpaceOnUse">
-        <path d="M 24 0 L 0 0 0 24" fill="none" stroke="${theme.colors.gridDot}" stroke-width="0.75" />
+        <path d="M 24 0 L 0 0 0 24" fill="none" stroke="${theme.colors.gridDot}" stroke-width="${isBlueprint ? "0.9" : "0.75"}" />
       </pattern>`;
-      bgRectSvg = `<rect width="${width}" height="${height}" rx="12" fill="${theme.colors.bg}" /><rect width="${width}" height="${height}" rx="12" fill="url(#ill-bg-grid)" />`;
-    } else if (background === "surface") {
+      const blueprintFrame = isBlueprint
+        ? `<rect x="8" y="8" width="${width - 16}" height="${height - 16}" fill="none" stroke="${theme.colors.gridDot}" stroke-width="1" stroke-dasharray="4 4" />`
+        : "";
+      bgRectSvg = `<rect width="${width}" height="${height}" rx="${isBlueprint ? 4 : 12}" fill="${theme.colors.bg}" /><rect width="${width}" height="${height}" rx="${isBlueprint ? 4 : 12}" fill="url(#ill-bg-grid)" />${blueprintFrame}`;
+    } else if (effectiveBg === "surface") {
       bgRectSvg = `<rect width="${width}" height="${height}" rx="12" fill="${theme.colors.surface}" />`;
     }
   }
@@ -6061,7 +7102,13 @@ export class AiIllustrationElement extends BaseHTMLElement {
 
     const svgHtml = renderSceneGraphToSvgString(scene);
     const showToolbar = this.getAttribute("toolbar") !== "false";
-    const isSketch = scene.preset === "sketch";
+    const isAltPreset = scene.preset !== "clean";
+    const presetLabel =
+      scene.preset === "sketch"
+        ? "✎ Sketch"
+        : scene.preset === "blueprint"
+        ? "⊞ Blueprint"
+        : "◇ Clean";
 
     this.shadow.innerHTML = `
       <style>${COMPONENT_STYLES}</style>
@@ -6069,8 +7116,8 @@ export class AiIllustrationElement extends BaseHTMLElement {
         ${
           showToolbar
             ? `<div class="ai-ill-toolbar" role="toolbar" aria-label="Illustration controls">
-                <button class="ai-ill-btn ${isSketch ? "is-active" : ""}" data-action="toggle-preset" title="切换手绘 (Sketch) / 扁平 (Clean) 风格">
-                  ${isSketch ? "✎ Sketch" : "◇ Clean"}
+                <button class="ai-ill-btn ${isAltPreset ? "is-active" : ""}" data-action="toggle-preset" title="切换扁平 (Clean) / 手绘 (Sketch) / 工程蓝图 (Blueprint) 风格">
+                  ${presetLabel}
                 </button>
                 <button class="ai-ill-btn ${isCompact ? "is-active" : ""}" data-action="toggle-compact" title="切换桌面横向 / 移动端纵向重排">
                   ${isCompact ? "↕ 纵排" : "↔ 横排"}
@@ -6215,7 +7262,12 @@ export class AiIllustrationElement extends BaseHTMLElement {
 
       if (action === "toggle-preset") {
         const current = this.currentScene?.preset || "clean";
-        this.overridePreset = current === "sketch" ? "clean" : "sketch";
+        this.overridePreset =
+          current === "clean"
+            ? "sketch"
+            : current === "sketch"
+            ? "blueprint"
+            : "clean";
         this.render();
       } else if (action === "toggle-compact") {
         const currentCompact =

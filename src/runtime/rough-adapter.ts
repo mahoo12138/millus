@@ -135,3 +135,52 @@ export function generateRoughEllipseStrokePath(
 
   return strokes.join(" ");
 }
+
+export function generateRoughLinePath(
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  seedKey: string,
+  roughness = 1.1
+): string {
+  const rng = new SeededRandom(seedKey);
+  return [
+    roughLineSegment(x1, y1, x2, y2, rng, roughness * 0.8),
+    roughLineSegment(x1, y1, x2, y2, rng, roughness * 0.5),
+  ].join(" ");
+}
+
+/**
+ * Generates a continuous hand-sketched companion stroke along a polyline of waypoints
+ * for Sketch-mode connection edges while keeping start/end tangents aligned with markers.
+ */
+export function generateRoughEdgeCompanionPath(
+  points: [number, number][],
+  seedKey: string,
+  roughness = 1.15
+): string {
+  if (points.length < 2) return "";
+  const rng = new SeededRandom(seedKey);
+  const segs: string[] = [];
+
+  for (let i = 0; i < points.length - 1; i++) {
+    const [x1, y1] = points[i];
+    const [x2, y2] = points[i + 1];
+    const len = Math.hypot(x2 - x1, y2 - y1);
+    if (len < 1) continue;
+    const jitter = Math.min(2.2, Math.max(0.5, len * 0.014)) * roughness;
+    const mid1X = x1 + (x2 - x1) * 0.33 + rng.offset(jitter);
+    const mid1Y = y1 + (y2 - y1) * 0.33 + rng.offset(jitter);
+    const mid2X = x1 + (x2 - x1) * 0.67 + rng.offset(jitter);
+    const mid2Y = y1 + (y2 - y1) * 0.67 + rng.offset(jitter);
+    if (i === 0) {
+      segs.push(`M ${x1.toFixed(1)} ${y1.toFixed(1)}`);
+    }
+    segs.push(
+      `C ${mid1X.toFixed(1)} ${mid1Y.toFixed(1)}, ${mid2X.toFixed(1)} ${mid2Y.toFixed(1)}, ${x2.toFixed(1)} ${y2.toFixed(1)}`
+    );
+  }
+
+  return segs.join(" ");
+}

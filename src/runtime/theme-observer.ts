@@ -18,14 +18,88 @@ interface RGB {
   b: number;
 }
 
+function parseAngleDegrees(raw: string): number {
+  const s = raw.trim().toLowerCase();
+  const val = parseFloat(s);
+  if (Number.isNaN(val)) return 0;
+  if (s.endsWith("turn")) return val * 360;
+  if (s.endsWith("rad")) return (val * 180) / Math.PI;
+  if (s.endsWith("grad")) return val * 0.9;
+  return val;
+}
+
+function hslToRgb(hDeg: number, sPct: number, lPct: number): RGB {
+  const h = (((hDeg % 360) + 360) % 360) / 360;
+  const s = Math.max(0, Math.min(1, sPct / 100));
+  const l = Math.max(0, Math.min(1, lPct / 100));
+
+  if (s === 0) {
+    const v = Math.round(l * 255);
+    return { r: v, g: v, b: v };
+  }
+
+  const hue2rgb = (p: number, q: number, t: number): number => {
+    let tt = t;
+    if (tt < 0) tt += 1;
+    if (tt > 1) tt -= 1;
+    if (tt < 1 / 6) return p + (q - p) * 6 * tt;
+    if (tt < 1 / 2) return q;
+    if (tt < 2 / 3) return p + (q - p) * (2 / 3 - tt) * 6;
+    return p;
+  };
+
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  return {
+    r: Math.round(hue2rgb(p, q, h + 1 / 3) * 255),
+    g: Math.round(hue2rgb(p, q, h) * 255),
+    b: Math.round(hue2rgb(p, q, h - 1 / 3) * 255),
+  };
+}
+
+function oklchToRgb(lVal: number, cVal: number, hDeg: number): RGB {
+  const L = Math.max(0, Math.min(1, lVal));
+  const C = Math.max(0, cVal);
+  const hRad = (hDeg * Math.PI) / 180;
+  const a = C * Math.cos(hRad);
+  const b = C * Math.sin(hRad);
+
+  const l_ = L + 0.3963377774 * a + 0.2158037573 * b;
+  const m_ = L - 0.1055613458 * a - 0.0638541728 * b;
+  const s_ = L - 0.0894841775 * a - 1.291485548 * b;
+
+  const l = l_ * l_ * l_;
+  const m = m_ * m_ * m_;
+  const s = s_ * s_ * s_;
+
+  const rLin = +4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s;
+  const gLin = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s;
+  const bLin = -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s;
+
+  const toSrgb = (x: number): number => {
+    const clamped = Math.max(0, Math.min(1, x));
+    const gamma =
+      clamped <= 0.0031308
+        ? 12.92 * clamped
+        : 1.055 * Math.pow(clamped, 1 / 2.4) - 0.055;
+    return Math.round(gamma * 255);
+  };
+
+  return {
+    r: toSrgb(rLin),
+    g: toSrgb(gLin),
+    b: toSrgb(bLin),
+  };
+}
+
 export function parseColorToRgb(input: string, fallback: RGB): RGB {
   const trimmed = input.trim();
   if (!trimmed) return fallback;
 
-  // Hex (#rgb or #rrggbb)
+  // 1. Hex (#rgb, #rgba, #rrggbb, #rrggbbaa)
   if (trimmed.startsWith("#")) {
     const hex = trimmed.slice(1);
-    if (hex.length === 3) {
+    if (hex.length === 3 || hex.length === 4) {
       return {
         r: parseInt(hex[0] + hex[0], 16),
         g: parseInt(hex[1] + hex[1], 16),
@@ -41,14 +115,68 @@ export function parseColorToRgb(input: string, fallback: RGB): RGB {
     }
   }
 
-  // rgb() or rgba()
-  const rgbMatch = trimmed.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
-  if (rgbMatch) {
-    return {
-      r: Number(rgbMatch[1]),
-      g: Number(rgbMatch[2]),
-      b: Number(rgbMatch[3]),
-    };
+  // 2. rgb() or rgba() — supports comma-separated and modern CSS Color 4 space-separated syntax
+  const rgbFunc = trimmed.match(/^rgba?\(\s*([^)]+)\s*\)$/i);
+  if (rgbFunc) {
+    const body = rgbFunc[1].split("/")[0].trim();
+    const parts = body.includes(",")
+      ? body.split(",").map((s) => s.trim())
+      : body.split(/\s+/);
+    if (parts.length >= 3) {
+      const parseChannel = (raw: string): number => {
+        if (raw.endsWith("%")) {
+          return Math.round((parseFloat(raw) / 100) * 255);
+        }
+        return Math.round(parseFloat(raw));
+      };
+      const r = parseChannel(parts[0]);
+      const g = parseChannel(parts[1]);
+      const b = parseChannel(parts[2]);
+      if (!Number.isNaN(r) && !Number.isNaN(g) && !Number.isNaN(b)) {
+        return {
+          r: Math.max(0, Math.min(255, r)),
+          g: Math.max(0, Math.min(255, g)),
+          b: Math.max(0, Math.min(255, b)),
+        };
+      }
+    }
+  }
+
+  // 3. hsl() or hsla() — comma or space-separated
+  const hslFunc = trimmed.match(/^hsla?\(\s*([^)]+)\s*\)$/i);
+  if (hslFunc) {
+    const body = hslFunc[1].split("/")[0].trim();
+    const parts = body.includes(",")
+      ? body.split(",").map((s) => s.trim())
+      : body.split(/\s+/);
+    if (parts.length >= 3) {
+      const h = parseAngleDegrees(parts[0]);
+      const s = parseFloat(parts[1]);
+      const l = parseFloat(parts[2]);
+      if (!Number.isNaN(s) && !Number.isNaN(l)) {
+        return hslToRgb(h, s, l);
+      }
+    }
+  }
+
+  // 4. oklch(L C H [/ A]) — Tailwind v4 / modern design systems
+  const oklchFunc = trimmed.match(/^oklch\(\s*([^)]+)\s*\)$/i);
+  if (oklchFunc) {
+    const body = oklchFunc[1].split("/")[0].trim();
+    const parts = body.includes(",")
+      ? body.split(",").map((s) => s.trim())
+      : body.split(/\s+/);
+    if (parts.length >= 3) {
+      const rawL = parts[0];
+      const l = rawL.endsWith("%")
+        ? parseFloat(rawL) / 100
+        : parseFloat(rawL);
+      const c = parseFloat(parts[1]);
+      const h = parseAngleDegrees(parts[2]);
+      if (!Number.isNaN(l) && !Number.isNaN(c)) {
+        return oklchToRgb(l, c, h);
+      }
+    }
   }
 
   return fallback;
@@ -163,11 +291,17 @@ export function resolveThemeTokens(
         "--vp-c-bg",
         "--sl-color-bg",
       ]);
-      if (rawBg && rawBg.startsWith("#")) {
+      if (rawBg) {
         isDark = getRelativeLuminance(rawBg) < 0.45;
       }
     }
   }
+
+  const cssPreset = readFirstCssVar(styles, ["--ill-preset"]) as
+    | PresetStyle
+    | undefined;
+  const activePreset: PresetStyle = overridePreset || cssPreset || "clean";
+  const isBlueprint = activePreset === "blueprint";
 
   const mode: "light" | "dark" = isDark ? "dark" : "light";
   const defaultBg = isDark ? "#0b0f19" : "#ffffff";
@@ -179,13 +313,16 @@ export function resolveThemeTokens(
   const defaultTextMuted = isDark ? "#94a3b8" : "#64748b";
   const defaultBorder = isDark ? "#2a364f" : "#cbd5e1";
 
-  const bg =
+  const rawBgColor =
     readFirstCssVar(styles, [
       "--ill-bg",
       "--blog-bg",
       "--vp-c-bg",
       "--sl-color-bg",
     ]) || defaultBg;
+  const bg = isBlueprint
+    ? mixColors(isDark ? "#082046" : "#e0f2fe", rawBgColor, 0.42)
+    : rawBgColor;
 
   const surface =
     readFirstCssVar(styles, [
@@ -238,10 +375,13 @@ export function resolveThemeTokens(
   };
 
   (Object.keys(baseToneDefaults) as SemanticTone[]).forEach((tone) => {
-    const main =
+    const rawMain =
       readFirstCssVar(styles, toneVarMap[tone]) || baseToneDefaults[tone];
-    const softWeight = isDark ? 0.16 : 0.11;
-    const borderWeight = isDark ? 0.55 : 0.45;
+    const main = rgbToHex(
+      parseColorToRgb(rawMain, parseColorToRgb(baseToneDefaults[tone], { r: 59, g: 130, b: 246 }))
+    );
+    const softWeight = isBlueprint ? (isDark ? 0.2 : 0.14) : isDark ? 0.16 : 0.11;
+    const borderWeight = isBlueprint ? (isDark ? 0.68 : 0.58) : isDark ? 0.55 : 0.45;
     tones[tone] = {
       main,
       softBg: mixColors(main, bg, softWeight),
@@ -266,32 +406,32 @@ export function resolveThemeTokens(
     ]) ||
     'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace';
 
-  const cssPreset = readFirstCssVar(styles, ["--ill-preset"]) as
-    | PresetStyle
-    | undefined;
-
   return {
     mode,
     colors: {
       bg,
-      surface,
-      surfaceElevated: defaultSurfaceElevated,
+      surface: mixColors(surface, bg, 0.85),
+      surfaceElevated: isBlueprint
+        ? mixColors(isDark ? "#0c2b59" : "#f0f9ff", defaultSurfaceElevated, 0.5)
+        : defaultSurfaceElevated,
       codeBg: defaultCodeBg,
       codeText: defaultCodeText,
       text,
       textMuted,
       border,
-      gridDot: mixColors(textMuted, bg, isDark ? 0.25 : 0.22),
+      gridDot: isBlueprint
+        ? mixColors(tones.info.main, bg, isDark ? 0.26 : 0.22)
+        : mixColors(textMuted, bg, isDark ? 0.25 : 0.22),
       tones,
     },
     typography: {
-      fontSans,
+      fontSans: isBlueprint ? fontMono : fontSans,
       fontMono,
       baseFontSize: 13,
     },
     geometry: {
-      baseRadius: 10,
-      preset: overridePreset || cssPreset || "clean",
+      baseRadius: isBlueprint ? 3 : 10,
+      preset: activePreset,
       roughness: overrideRoughness ?? 1.25,
     },
   };

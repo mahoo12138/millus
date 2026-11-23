@@ -278,7 +278,13 @@ export class AiIllustrationElement extends BaseHTMLElement {
 
     const svgHtml = renderSceneGraphToSvgString(scene);
     const showToolbar = this.getAttribute("toolbar") !== "false";
-    const isSketch = scene.preset === "sketch";
+    const isAltPreset = scene.preset !== "clean";
+    const presetLabel =
+      scene.preset === "sketch"
+        ? "✎ Sketch"
+        : scene.preset === "blueprint"
+        ? "⊞ Blueprint"
+        : "◇ Clean";
 
     this.shadow.innerHTML = `
       <style>${COMPONENT_STYLES}</style>
@@ -286,8 +292,8 @@ export class AiIllustrationElement extends BaseHTMLElement {
         ${
           showToolbar
             ? `<div class="ai-ill-toolbar" role="toolbar" aria-label="Illustration controls">
-                <button class="ai-ill-btn ${isSketch ? "is-active" : ""}" data-action="toggle-preset" title="切换手绘 (Sketch) / 扁平 (Clean) 风格">
-                  ${isSketch ? "✎ Sketch" : "◇ Clean"}
+                <button class="ai-ill-btn ${isAltPreset ? "is-active" : ""}" data-action="toggle-preset" title="切换扁平 (Clean) / 手绘 (Sketch) / 工程蓝图 (Blueprint) 风格">
+                  ${presetLabel}
                 </button>
                 <button class="ai-ill-btn ${isCompact ? "is-active" : ""}" data-action="toggle-compact" title="切换桌面横向 / 移动端纵向重排">
                   ${isCompact ? "↕ 纵排" : "↔ 横排"}
@@ -432,7 +438,12 @@ export class AiIllustrationElement extends BaseHTMLElement {
 
       if (action === "toggle-preset") {
         const current = this.currentScene?.preset || "clean";
-        this.overridePreset = current === "sketch" ? "clean" : "sketch";
+        this.overridePreset =
+          current === "clean"
+            ? "sketch"
+            : current === "sketch"
+            ? "blueprint"
+            : "clean";
         this.render();
       } else if (action === "toggle-compact") {
         const currentCompact =
