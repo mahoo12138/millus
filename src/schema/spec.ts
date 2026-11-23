@@ -347,6 +347,7 @@ export interface PrimitiveDecoration {
     | "rect"
     | "circle"
     | "line"
+    | "path"
     | "text"
     | "icon"
     | "badge"
@@ -360,6 +361,9 @@ export interface PrimitiveDecoration {
   r?: number;
   x2?: number;
   y2?: number;
+  d?: string;
+  markerStart?: string;
+  markerEnd?: string;
   text?: string;
   tokens?: SyntaxTokenSpan[];
   iconName?: string;

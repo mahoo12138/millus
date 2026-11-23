@@ -358,6 +358,7 @@
             
             
             
+            
              
                  
                    
@@ -369,6 +370,9 @@
              
               
               
+             
+                       
+                     
                 
                              
                     
@@ -2323,11 +2327,21 @@ export class HybridLayoutSolver {
 
       if (targetBox && ownerBox) {
         const gap = 18;
+        const isInteriorSubAnchor =
+          (side === "top" && targetBox.y > ownerBox.y + 4) ||
+          (side === "bottom" &&
+            targetBox.y + targetBox.height < ownerBox.y + ownerBox.height - 4);
         if (side === "top") {
-          cNode.x = targetBox.x + (targetBox.width - cNode.width) / 2;
+          const centeredX = targetBox.x + (targetBox.width - cNode.width) / 2;
+          cNode.x = isInteriorSubAnchor
+            ? Math.min(centeredX, ownerBox.x - 24)
+            : centeredX;
           cNode.y = Math.min(targetBox.y, ownerBox.y) - cNode.height - gap;
         } else if (side === "bottom") {
-          cNode.x = targetBox.x + (targetBox.width - cNode.width) / 2;
+          const centeredX = targetBox.x + (targetBox.width - cNode.width) / 2;
+          cNode.x = isInteriorSubAnchor
+            ? Math.min(centeredX, ownerBox.x - 24)
+            : centeredX;
           cNode.y =
             Math.max(
               targetBox.y + targetBox.height,
@@ -2474,34 +2488,48 @@ export class HybridLayoutSolver {
   }
 
           measureElement(spec             , compact         )            {
+    let node           ;
     switch (spec.type) {
       case "card":
-        return this.buildCardNode(spec, compact);
+        node = this.buildCardNode(spec, compact);
+        break;
       case "code-block":
-        return this.buildCodeBlockNode(spec);
+        node = this.buildCodeBlockNode(spec);
+        break;
       case "terminal":
-        return this.buildTerminalNode(spec);
+        node = this.buildTerminalNode(spec);
+        break;
       case "table":
-        return this.buildTableNode(spec);
+        node = this.buildTableNode(spec);
+        break;
       case "group":
       case "window":
-        return this.buildGroupOrWindowNode(spec, compact);
+        node = this.buildGroupOrWindowNode(spec, compact);
+        break;
       case "callout":
-        return this.buildCalloutNode(spec);
+        node = this.buildCalloutNode(spec);
+        break;
       case "badge":
-        return this.buildBadgeNode(spec);
+        node = this.buildBadgeNode(spec);
+        break;
       case "text":
-        return this.buildTextNode(spec);
+        node = this.buildTextNode(spec);
+        break;
       case "icon":
-        return this.buildIconNode(spec);
+        node = this.buildIconNode(spec);
+        break;
       case "polygon":
-        return this.buildPolygonNode(spec);
+        node = this.buildPolygonNode(spec);
+        break;
       case "path":
-        return this.buildPathNode(spec);
+        node = this.buildPathNode(spec);
+        break;
       case "bitfield":
-        return this.buildBitfieldNode(spec);
+        node = this.buildBitfieldNode(spec);
+        break;
       case "sequence":
-        return this.buildSequenceNode(spec);
+        node = this.buildSequenceNode(spec);
+        break;
       case "rect":
       case "circle":
       case "ellipse":
@@ -2509,7 +2537,98 @@ export class HybridLayoutSolver {
       case "cylinder":
       case "queue":
       default:
-        return this.buildPrimitiveShapeNode(spec                   );
+        node = this.buildPrimitiveShapeNode(spec                   );
+        break;
+    }
+
+    this.enforceNodeDecorationBounds(node, spec);
+    return node;
+  }
+
+  /**
+   * Universal boundary guard: verifies that every internal decoration (text, line, rect, circle, icon)
+   * fits inside [0, node.width] x [0, node.height] with safe margin, auto-expanding auto-sized nodes
+   * and stretching full-bleed header bars/dividers if any internal element would overflow.
+   */
+          enforceNodeDecorationBounds(
+    node           ,
+    spec             
+  )       {
+    if (node.shape === "none" || node.decorations.length === 0) return;
+
+    const oldW = node.width;
+    const oldH = node.height;
+    let reqW = oldW;
+    let reqH = oldH;
+    const rightPad = node.type === "text" || node.type === "badge" ? 4 : 8;
+    const bottomPad = node.type === "text" || node.type === "badge" ? 4 : 8;
+
+    for (const d of node.decorations) {
+      if (d.kind === "text" && d.text) {
+        const tw = this.measurer.measureLineWidth(
+          d.text,
+          d.fontSize || 12,
+          d.fontFamily || this.theme.typography.fontSans,
+          d.fontWeight || 400
+        );
+        if (d.textAnchor === "end") {
+          // Right-aligned text already has its right anchor at d.x (extending left to d.x - tw)
+          reqW = Math.max(reqW, Math.ceil(d.x));
+        } else if (d.textAnchor === "middle") {
+          reqW = Math.max(reqW, Math.ceil(d.x + tw / 2 + rightPad));
+        } else {
+          reqW = Math.max(reqW, Math.ceil(d.x + tw + rightPad));
+        }
+        reqH = Math.max(reqH, Math.ceil(d.y + bottomPad));
+      } else if (d.kind === "rect" || d.kind === "table-cell" || d.kind === "code-line") {
+        reqW = Math.max(reqW, Math.ceil(d.x + (d.width || 0)));
+        reqH = Math.max(reqH, Math.ceil(d.y + (d.height || 0)));
+      } else if (d.kind === "line") {
+        reqW = Math.max(reqW, Math.ceil(Math.max(d.x, d.x2 ?? d.x)));
+        reqH = Math.max(reqH, Math.ceil(Math.max(d.y, d.y2 ?? d.y)));
+      } else if (d.kind === "circle") {
+        const r = d.r || 4;
+        reqW = Math.max(reqW, Math.ceil(d.x + r + 8));
+        reqH = Math.max(reqH, Math.ceil(d.y + r + 8));
+      }
+    }
+
+    if (typeof spec.width !== "number" && reqW > oldW) {
+      const deltaW = reqW - oldW;
+      node.width = reqW;
+      for (const d of node.decorations) {
+        if (d.kind === "line" && d.x === 0 && d.x2 === oldW) {
+          d.x2 = reqW;
+        } else if (
+          (d.kind === "rect" || d.kind === "code-line") &&
+          d.x <= 2 &&
+          d.width !== undefined &&
+          Math.abs(d.width - (oldW - d.x * 2)) <= 2
+        ) {
+          d.width = reqW - d.x * 2;
+        } else if (
+          d.kind === "table-cell" &&
+          d.width !== undefined &&
+          Math.abs(d.x + d.width - oldW) <= 2
+        ) {
+          d.width += deltaW;
+        } else if (
+          d.kind === "text" &&
+          d.textAnchor === "end" &&
+          d.x >= oldW - 20
+        ) {
+          d.x += deltaW;
+        }
+      }
+      for (const sub of node.subAnchors) {
+        if (Math.abs(sub.x + sub.width - oldW) <= 2) {
+          sub.width += deltaW;
+        }
+      }
+    }
+
+    if (typeof spec.height !== "number" && reqH > oldH) {
+      node.height = reqH;
     }
   }
 
@@ -2571,8 +2690,13 @@ export class HybridLayoutSolver {
       childrenHeight = box.height;
     }
 
+    const subtitleWidth = spec.subtitle
+      ? this.measurer.measureLineWidth(spec.subtitle, 11, fontMono, 400, true)
+      : 0;
+
     const contentWidth = Math.max(
       headerRowWidth,
+      subtitleWidth,
       bodyBlock ? bodyBlock.width : 0,
       childrenWidth,
       150
@@ -2744,10 +2868,28 @@ export class HybridLayoutSolver {
       maxCodeLineW = Math.max(maxCodeLineW, w);
     }
 
+    const headerTitleW = spec.title
+      ? this.measurer.measureLineWidth(spec.title, 11, fontMono, 600, true)
+      : 0;
+    const headerLangW = spec.lang
+      ? this.measurer.measureLineWidth(
+          spec.lang.toUpperCase(),
+          10,
+          fontMono,
+          600,
+          true
+        )
+      : 0;
+    const headerMinW =
+      62 + headerTitleW + (headerLangW > 0 ? headerLangW + 28 : 20);
+
     const width =
       typeof spec.width === "number"
         ? spec.width
-        : Math.ceil(padX * 2 + gutterWidth + maxCodeLineW + 18);
+        : Math.max(
+            Math.ceil(padX * 2 + gutterWidth + maxCodeLineW + 18),
+            Math.ceil(headerMinW)
+          );
     const height =
       typeof spec.height === "number"
         ? spec.height
@@ -2933,10 +3075,22 @@ export class HybridLayoutSolver {
       );
     }
 
+    const termTitleW = this.measurer.measureLineWidth(
+      spec.title || "bash",
+      11,
+      fontMono,
+      400,
+      true
+    );
+    const termHeaderMinW = 60 * 2 + termTitleW;
+
     const width =
       typeof spec.width === "number"
         ? spec.width
-        : Math.ceil(maxLineW + padX * 2 + 24);
+        : Math.max(
+            Math.ceil(maxLineW + padX * 2 + 24),
+            Math.ceil(termHeaderMinW)
+          );
     const height =
       typeof spec.height === "number"
         ? spec.height
@@ -3113,7 +3267,19 @@ export class HybridLayoutSolver {
       });
     });
 
-    const totalWidth = colWidths.reduce((acc, w) => acc + w, 0);
+    const titleMinW = spec.title
+      ? this.measurer.measureLineWidth(spec.title, 12, fontSans, 600) +
+        cellPadX * 2 +
+        12
+      : 0;
+    let totalWidth = colWidths.reduce((acc, w) => acc + w, 0);
+    if (titleMinW > totalWidth && colCount > 0) {
+      const extraPerCol = Math.ceil((titleMinW - totalWidth) / colCount);
+      for (let i = 0; i < colCount; i++) {
+        colWidths[i] += extraPerCol;
+      }
+      totalWidth = colWidths.reduce((acc, w) => acc + w, 0);
+    }
     const totalHeight =
       titleBarHeight + headerHeight + rows.length * rowHeight;
 
@@ -3126,11 +3292,11 @@ export class HybridLayoutSolver {
     if (spec.title) {
       decorations.push({
         kind: "rect",
-        x: 1,
-        y: 1,
-        width: totalWidth - 2,
+        x: 0,
+        y: 0,
+        width: totalWidth,
         height: titleBarHeight,
-        rx: Math.max(0, style.radius - 1),
+        rx: 0,
         fill: tonePalette.softBg,
       });
       decorations.push({
@@ -3159,10 +3325,11 @@ export class HybridLayoutSolver {
       let colX = 0;
       decorations.push({
         kind: "rect",
-        x: 1,
-        y: cursorY + 1,
-        width: totalWidth - 2,
-        height: headerHeight - 1,
+        x: 0,
+        y: cursorY,
+        width: totalWidth,
+        height: headerHeight,
+        rx: 0,
         fill: this.theme.colors.surface,
       });
       headers.forEach((h, colIdx) => {
@@ -3195,18 +3362,6 @@ export class HybridLayoutSolver {
       let colX = 0;
       const rowY = cursorY + rIdx * rowHeight;
 
-      if (rIdx > 0) {
-        decorations.push({
-          kind: "line",
-          x: 0,
-          y: rowY,
-          x2: totalWidth,
-          y2: rowY,
-          stroke: this.theme.colors.border,
-          strokeWidth: 1,
-        });
-      }
-
       for (let cIdx = 0; cIdx < colCount; cIdx++) {
         const cw = colWidths[cIdx];
         const cell = row[cIdx] ?? "";
@@ -3228,10 +3383,11 @@ export class HybridLayoutSolver {
         decorations.push({
           kind: "table-cell",
           anchorId,
-          x: colX + 1,
-          y: rowY + 1,
-          width: cw - 2,
-          height: rowHeight - 2,
+          x: colX,
+          y: rowY,
+          width: cw,
+          height: rowHeight,
+          rx: 0,
           fill: cellTone
             ? this.theme.colors.tones[cellTone].softBg
             : "transparent",
@@ -3263,6 +3419,18 @@ export class HybridLayoutSolver {
         });
 
         colX += cw;
+      }
+
+      if (rIdx > 0) {
+        decorations.push({
+          kind: "line",
+          x: 0,
+          y: rowY,
+          x2: totalWidth,
+          y2: rowY,
+          stroke: this.theme.colors.border,
+          strokeWidth: 1,
+        });
       }
     });
 
@@ -3314,14 +3482,31 @@ export class HybridLayoutSolver {
       compact
     );
 
-    const titleWidth = spec.title
-      ? this.measurer.measureLineWidth(
-          spec.title,
-          12.5,
-          this.theme.typography.fontSans,
-          600
-        ) + 40
-      : 0;
+    const windowBarText = spec.url || spec.title || "";
+    const windowUrlTextW =
+      spec.type === "window" && windowBarText
+        ? this.measurer.measureLineWidth(
+            windowBarText,
+            11,
+            this.theme.typography.fontMono,
+            400,
+            true
+          )
+        : 0;
+
+    const titleWidth =
+      spec.type === "window"
+        ? windowUrlTextW > 0
+          ? windowUrlTextW + 136
+          : 0
+        : spec.title
+        ? this.measurer.measureLineWidth(
+            spec.title,
+            12.5,
+            this.theme.typography.fontSans,
+            600
+          ) + 40
+        : 0;
 
     const width =
       typeof spec.width === "number"
@@ -3362,8 +3547,11 @@ export class HybridLayoutSolver {
           fill: col,
         });
       });
-      if (spec.url || spec.title) {
-        const barW = Math.min(width - 110, 260);
+      if (windowBarText) {
+        const barW = Math.max(
+          windowUrlTextW + 24,
+          Math.min(width - 110, 260)
+        );
         const barX = (width - barW) / 2;
         decorations.push({
           kind: "rect",
@@ -3705,7 +3893,7 @@ export class HybridLayoutSolver {
       }
       const spanX = Math.max(1e-3, maxPx - minPx);
       const spanY = Math.max(1e-3, maxPy - minPy);
-      const pad = 2;
+      const pad = 0;
       points = rawPts.map(([px, py]) => [
         Math.round(pad + ((px - minPx) / spanX) * (width - pad * 2)),
         Math.round(pad + ((py - minPy) / spanY) * (height - pad * 2)),
@@ -3816,7 +4004,33 @@ export class HybridLayoutSolver {
       fieldWidths.push(Math.ceil(propW));
     }
 
-    const rawTotalW = Math.max(180, fieldWidths.reduce((a, b) => a + b, 0));
+    const headerTitleW = spec.title
+      ? this.measurer.measureLineWidth(spec.title, 12, fontSans, 600)
+      : 0;
+    const headerBitsW = spec.totalBits
+      ? this.measurer.measureLineWidth(
+          `${spec.totalBits}-bit`,
+          10.5,
+          fontMono,
+          600,
+          true
+        ) + 18
+      : 0;
+    const headerMinW = Math.ceil(headerTitleW + headerBitsW + padX * 2 + 12);
+
+    let sumFieldsW = fieldWidths.reduce((a, b) => a + b, 0);
+    const targetMinW = Math.max(180, headerMinW);
+    if (sumFieldsW < targetMinW && fieldWidths.length > 0) {
+      const extraPerField = Math.ceil(
+        (targetMinW - sumFieldsW) / fieldWidths.length
+      );
+      for (let i = 0; i < fieldWidths.length; i++) {
+        fieldWidths[i] += extraPerField;
+      }
+      sumFieldsW = fieldWidths.reduce((a, b) => a + b, 0);
+    }
+
+    const rawTotalW = Math.max(targetMinW, sumFieldsW);
     const width = typeof spec.width === "number" ? spec.width : rawTotalW;
     const height =
       typeof spec.height === "number"
@@ -3832,11 +4046,11 @@ export class HybridLayoutSolver {
     if (spec.title) {
       decorations.push({
         kind: "rect",
-        x: 1,
-        y: 1,
-        width: width - 2,
+        x: 0,
+        y: 0,
+        width,
         height: titleBarHeight,
-        rx: Math.max(0, style.radius - 1),
+        rx: 0,
         fill: tonePalette.softBg,
       });
       decorations.push({
@@ -3874,13 +4088,14 @@ export class HybridLayoutSolver {
       cursorY += titleBarHeight;
     }
 
-    // Bit offset ruler strip
+    // Bit offset ruler strip (full-bleed)
     decorations.push({
       kind: "rect",
-      x: 1,
-      y: cursorY + 1,
-      width: width - 2,
-      height: rulerHeight - 1,
+      x: 0,
+      y: cursorY,
+      width,
+      height: rulerHeight,
+      rx: 0,
       fill: this.theme.colors.surface,
     });
     decorations.push({
@@ -3941,14 +4156,15 @@ export class HybridLayoutSolver {
         });
       }
 
-      // Field background cell
+      // Field background cell (full-bleed edge-to-edge fill)
       decorations.push({
         kind: "table-cell",
         anchorId,
-        x: colX + 1,
-        y: cellY + 1,
-        width: fw - 2,
-        height: cellHeight - 2,
+        x: colX,
+        y: cellY,
+        width: fw,
+        height: cellHeight,
+        rx: 0,
         fill: f.tone ? fPalette.softBg : "transparent",
       });
 
@@ -4045,15 +4261,29 @@ export class HybridLayoutSolver {
     const actorIndexById = new Map                ();
     actors.forEach((a, idx) => actorIndexById.set(a.id, idx));
 
+    const selfLoopW = 32;
+    const selfLoopH = 16;
     const colGaps = new Array        (Math.max(0, actors.length - 1)).fill(120);
     for (const msg of messages) {
       const i1 = actorIndexById.get(msg.from) ?? 0;
       const i2 = actorIndexById.get(msg.to) ?? 0;
-      const lw =
-        this.measurer.measureLineWidth(msg.label, 11, fontSans, 600) + 44;
-      if (Math.abs(i2 - i1) === 1) {
+      const spanCols = Math.abs(i2 - i1);
+      if (spanCols >= 1) {
+        const lw =
+          this.measurer.measureLineWidth(msg.label, 11, fontSans, 600) + 48;
         const minIdx = Math.min(i1, i2);
-        colGaps[minIdx] = Math.max(colGaps[minIdx], lw);
+        const perColReq = Math.ceil(lw / spanCols);
+        for (let c = 0; c < spanCols; c++) {
+          colGaps[minIdx + c] = Math.max(colGaps[minIdx + c], perColReq);
+        }
+      } else if (i1 === i2 && actors.length > 1) {
+        // Self-call on an actor: ensure the adjacent corridor (inward for rightmost actor) has room for loop + label
+        const lw =
+          this.measurer.measureLineWidth(msg.label, 11, fontSans, 600) +
+          selfLoopW +
+          44;
+        const gapIdx = i1 === actors.length - 1 ? i1 - 1 : i1;
+        colGaps[gapIdx] = Math.max(colGaps[gapIdx], lw);
       }
     }
 
@@ -4073,11 +4303,43 @@ export class HybridLayoutSolver {
 
     const lastActorHalf =
       actors.length > 0 ? actorWidths[actors.length - 1] / 2 : 60;
-    const totalW = Math.max(240, Math.ceil(cursorX + lastActorHalf + padX));
+
+    // Account for right extent of self-call messages (when single-actor or outward) and title bar width
+    let maxRightExtent = cursorX + lastActorHalf;
+    for (const msg of messages) {
+      const i1 = actorIndexById.get(msg.from) ?? 0;
+      const i2 = actorIndexById.get(msg.to) ?? 0;
+      if (i1 === i2) {
+        const selfDir =
+          actors.length > 1 && i1 === actors.length - 1 ? -1 : 1;
+        if (selfDir === 1) {
+          const cx = actorCentersX[i1] ?? padX;
+          const lw = this.measurer.measureLineWidth(
+            msg.label,
+            11,
+            fontSans,
+            600
+          );
+          maxRightExtent = Math.max(
+            maxRightExtent,
+            cx + selfLoopW + 8 + lw
+          );
+        }
+      }
+    }
+
+    const titleMinW = spec.title
+      ? this.measurer.measureLineWidth(spec.title, 12, fontSans, 600) + 36
+      : 0;
+    const totalW = Math.max(
+      240,
+      Math.ceil(titleMinW),
+      Math.ceil(maxRightExtent + padX)
+    );
     const width = typeof spec.width === "number" ? spec.width : totalW;
     const timelineStartY = titleBarHeight + padTop + actorBoxH;
     const timelineEndY =
-      timelineStartY + Math.max(1, messages.length) * msgRowH + 14;
+      timelineStartY + Math.max(1, messages.length) * msgRowH + 16;
     const height =
       typeof spec.height === "number"
         ? spec.height
@@ -4089,11 +4351,11 @@ export class HybridLayoutSolver {
     if (spec.title) {
       decorations.push({
         kind: "rect",
-        x: 1,
-        y: 1,
-        width: width - 2,
+        x: 0,
+        y: 0,
+        width,
         height: titleBarHeight,
-        rx: Math.max(0, style.radius - 1),
+        rx: 0,
         fill: this.theme.colors.surface,
       });
       decorations.push({
@@ -4137,7 +4399,7 @@ export class HybridLayoutSolver {
         tone: aTone,
       });
 
-      // Vertical lifeline
+      // Vertical lifeline (standardized 1.5px stroke width matching outer node borders)
       decorations.push({
         kind: "line",
         x: cx,
@@ -4145,7 +4407,7 @@ export class HybridLayoutSolver {
         x2: cx,
         y2: timelineEndY,
         stroke: this.theme.colors.border,
-        strokeWidth: 1.25,
+        strokeWidth: 1.5,
         strokeDasharray: "4 4",
       });
 
@@ -4211,59 +4473,50 @@ export class HybridLayoutSolver {
         tone: mTone,
       });
 
-      // Activation dots on lifelines
-      decorations.push({
-        kind: "circle",
-        x: x1,
-        y: msgY,
-        r: 3,
-        fill: mColor,
-      });
-
       if (fromIdx === toIdx) {
-        // Self-call message loop
-        const loopW = 36;
-        const loopH = 14;
+        // Self-call message loop: faces inward for rightmost actor so edge actors stay symmetrically framed
+        const selfDir =
+          actors.length > 1 && fromIdx === actors.length - 1 ? -1 : 1;
+        const topY = msgY - 4;
+        const botY = topY + selfLoopH;
+        const loopEndX = x1 + selfDir * selfLoopW;
+        // Pull back path endpoint by 7.7px (7.0px marker tip + 0.7px lifeline half-stroke) so tip kisses outer edge of lifeline
+        const returnShaftEndX = x1 + selfDir * 7.7;
+        const cornerR = 4;
+
+        const loopPathD = `M ${x1} ${topY} L ${loopEndX - selfDir * cornerR} ${topY} Q ${loopEndX} ${topY} ${loopEndX} ${topY + cornerR} L ${loopEndX} ${botY - cornerR} Q ${loopEndX} ${botY} ${loopEndX - selfDir * cornerR} ${botY} L ${returnShaftEndX} ${botY}`;
         decorations.push({
-          kind: "line",
+          kind: "path",
           x: x1,
-          y: msgY - 4,
-          x2: x1 + loopW,
-          y2: msgY - 4,
+          y: topY,
+          d: loopPathD,
           stroke: mColor,
-          strokeWidth: 1.5,
+          strokeWidth: 1.65,
+          markerEnd: `arrow-${mTone}`,
         });
+        // Solid start dot rendered on top of path start (x1, topY) for seamless cap
         decorations.push({
-          kind: "line",
-          x: x1 + loopW,
-          y: msgY - 4,
-          x2: x1 + loopW,
-          y2: msgY + loopH,
-          stroke: mColor,
-          strokeWidth: 1.5,
-        });
-        decorations.push({
-          kind: "line",
-          x: x1 + loopW,
-          y: msgY + loopH,
-          x2: x1 + 4,
-          y2: msgY + loopH,
-          stroke: mColor,
-          strokeWidth: 1.5,
+          kind: "circle",
+          x: x1,
+          y: topY,
+          r: 3.2,
+          fill: mColor,
         });
         decorations.push({
           kind: "text",
-          x: x1 + loopW + 8,
-          y: msgY + 6,
+          x: loopEndX + selfDir * 8,
+          y: topY + selfLoopH / 2 + 4,
           text: msg.label,
           fontFamily: fontSans,
           fontSize: 11,
           fontWeight: 600,
           textColor: mColor,
+          textAnchor: selfDir === -1 ? "end" : "start",
         });
       } else {
         const dir = x2 >= x1 ? 1 : -1;
-        const endX = x2 - dir * 5;
+        // Pull back shaft endpoint by 7.7px (7.0px marker tip + 0.7px lifeline half-stroke) so tip kisses outer edge of target lifeline
+        const endX = x2 - dir * 7.7;
         decorations.push({
           kind: "line",
           x: x1,
@@ -4271,27 +4524,17 @@ export class HybridLayoutSolver {
           x2: endX,
           y2: msgY,
           stroke: mColor,
-          strokeWidth: 1.6,
-          strokeDasharray: msg.type === "reply" ? "5 4" : undefined,
+          strokeWidth: 1.65,
+          strokeDasharray: msg.type === "reply" ? "5 3.5" : undefined,
+          markerEnd: `arrow-${mTone}`,
         });
-        // Arrowhead chevron lines
+        // Solid start dot rendered on top of line start (x1, msgY) for seamless cap
         decorations.push({
-          kind: "line",
-          x: x2 - dir * 8,
-          y: msgY - 4,
-          x2: x2 - dir * 1,
-          y2: msgY,
-          stroke: mColor,
-          strokeWidth: 1.8,
-        });
-        decorations.push({
-          kind: "line",
-          x: x2 - dir * 8,
-          y: msgY + 4,
-          x2: x2 - dir * 1,
-          y2: msgY,
-          stroke: mColor,
-          strokeWidth: 1.8,
+          kind: "circle",
+          x: x1,
+          y: msgY,
+          r: 3.2,
+          fill: mColor,
         });
 
         const midX = (x1 + x2) / 2;
@@ -4335,12 +4578,13 @@ export class HybridLayoutSolver {
       ? this.measurer.measureLineWidth(spec.sublabel, 11, fontSans, 400)
       : 0;
 
+    const maxTextW = Math.max(labelW, subW);
     const minW =
       spec.type === "diamond"
-        ? Math.max(labelW, subW) + 56
+        ? Math.ceil(maxTextW * (spec.sublabel ? 1.55 : 1.32) + 48)
         : spec.type === "queue"
-        ? Math.max(labelW, subW) + 52
-        : Math.max(labelW, subW) + 36;
+        ? maxTextW + 52
+        : maxTextW + 36;
     const width =
       typeof spec.width === "number"
         ? spec.width
@@ -4453,12 +4697,18 @@ export class HybridLayoutSolver {
      
 
     const reqs               = [];
+    const labeledPairCount = new Map                ();
     for (const conn of this.connections) {
       const fromBase = conn.from.split("@")[0].split(".")[0].trim();
       const toBase = conn.to.split("@")[0].split(".")[0].trim();
       const sibA = siblingByDescendant.get(fromBase);
       const sibB = siblingByDescendant.get(toBase);
       if (!sibA || !sibB || sibA === sibB) continue;
+
+      const pairKey = sibA < sibB ? `${sibA}::${sibB}` : `${sibB}::${sibA}`;
+      if (conn.label) {
+        labeledPairCount.set(pairKey, (labeledPairCount.get(pairKey) || 0) + 1);
+      }
 
       const labelW = conn.label
         ? this.measurer.measureLineWidth(
@@ -4469,9 +4719,20 @@ export class HybridLayoutSolver {
           ) + 18
         : 0;
 
-      const horizGap = conn.label ? Math.max(64, Math.ceil(labelW + 44)) : 40;
+      const horizGap = conn.label ? Math.max(84, Math.ceil(labelW + 56)) : 44;
       const vertGap = conn.label ? (compact ? 56 : 64) : 30;
       reqs.push({ sibA, sibB, horizGap, vertGap });
+    }
+
+    // Widen horizontal and vertical corridors when multiple labeled edges run in parallel between the same sibling pair
+    for (const r of reqs) {
+      const pairKey =
+        r.sibA < r.sibB ? `${r.sibA}::${r.sibB}` : `${r.sibB}::${r.sibA}`;
+      const cnt = labeledPairCount.get(pairKey) || 0;
+      if (cnt >= 2) {
+        r.horizGap += Math.min(72, (cnt - 1) * 28);
+        r.vertGap += Math.min(72, (cnt - 1) * 28);
+      }
     }
 
     return {
@@ -4535,10 +4796,25 @@ export class HybridLayoutSolver {
       let cursorY = 0;
       for (let i = 0; i < nodes.length; i++) {
         const n = nodes[i];
-        if (align === "stretch") {
-          n.width = maxW;
+        const canStretch = n.type === "card" && n.shape === "rect";
+        if (align === "stretch" && canStretch) {
+          const oldW = n.width;
+          const deltaW = maxW - oldW;
+          if (deltaW > 0) {
+            n.width = maxW;
+            // Keep top-right badge pills aligned to the stretched right border of cards
+            for (const dec of n.decorations) {
+              if (
+                (dec.kind === "rect" || dec.kind === "text") &&
+                dec.x > oldW * 0.5 &&
+                dec.y <= 32
+              ) {
+                dec.x += deltaW;
+              }
+            }
+          }
           n.x = 0;
-        } else if (align === "center") {
+        } else if (align === "stretch" || align === "center") {
           n.x = (maxW - n.width) / 2;
         } else if (align === "end") {
           n.x = maxW - n.width;
@@ -4639,17 +4915,23 @@ export class HybridLayoutSolver {
     for (const n of nodes) {
       colGroupById.set(n.id, new Set([n.id]));
     }
-    if (!compact) {
-      for (let i = 0; i < nodes.length; i++) {
-        const p = specs[i].place;
-        const vRef = p?.below || p?.above;
-        if (vRef && colGroupById.has(vRef)) {
-          const gA = colGroupById.get(nodes[i].id) ;
-          const gB = colGroupById.get(vRef) ;
-          const merged = new Set        ([...gA, ...gB]);
-          for (const id of merged) {
-            colGroupById.set(id, merged);
-          }
+    for (let i = 0; i < nodes.length; i++) {
+      const p = specs[i].place;
+      const vRef = p?.below || p?.above;
+      if (vRef && colGroupById.has(vRef)) {
+        // In compact mode, only chain nodes whose rawPlace is below/above (not converted rightOf)
+        // and only when the parent itself isn't in a fan-out with this child's siblings
+        if (compact) {
+          const refHasRightOfSibling = specs.some(
+            (s) => s.place?.rightOf === vRef || s.place?.leftOf === vRef
+          );
+          if (refHasRightOfSibling) continue;
+        }
+        const gA = colGroupById.get(nodes[i].id) ;
+        const gB = colGroupById.get(vRef) ;
+        const merged = new Set        ([...gA, ...gB]);
+        for (const id of merged) {
+          colGroupById.set(id, merged);
         }
       }
     }
@@ -4768,7 +5050,7 @@ export class HybridLayoutSolver {
           });
           cursor += n.height + (stepGaps[i] || 0);
         }
-      } else if (!compact) {
+      } else {
         // Spread below/above fan-out siblings horizontally and center around ref's horizontal midpoint
         let totalW = 0;
         const stepGaps           = [];
@@ -4777,9 +5059,11 @@ export class HybridLayoutSolver {
           totalW += n.width;
           if (i < groupIds.length - 1) {
             const nextId = groupIds[i + 1];
+            const gA = colGroupById.get(n.id) || [n.id];
+            const gB = colGroupById.get(nextId) || [nextId];
             const g = Math.max(
               28,
-              gapResolver.getRequiredGap([n.id], [nextId], "horizontal")
+              gapResolver.getRequiredGap(gA, gB, "horizontal")
             );
             stepGaps.push(g);
             totalW += g;
@@ -4835,9 +5119,22 @@ export class HybridLayoutSolver {
           const groupA = isHorizPlace
             ? colGroupById.get(ref.id) || [ref.id]
             : [ref.id];
+          const fanDirKey = place.rightOf
+            ? `rightOf::${place.rightOf}`
+            : place.leftOf
+            ? `leftOf::${place.leftOf}`
+            : place.below
+            ? `below::${place.below}`
+            : place.above
+            ? `above::${place.above}`
+            : undefined;
+          const fanPeerIds =
+            fanDirKey && fanGroups.get(fanDirKey)
+              ? fanGroups.get(fanDirKey) 
+              : [node.id];
           const groupB = isHorizPlace
             ? colGroupById.get(node.id) || [node.id]
-            : [node.id];
+            : fanPeerIds;
           const connReqGap = gapResolver.getRequiredGap(
             groupA,
             groupB,
@@ -4925,17 +5222,36 @@ export class HybridLayoutSolver {
         }
       }
 
-      // AABB collision guard: nudge node if it overlaps any already-placed sibling
+      // Direction-aware AABB collision guard: nudge node if it overlaps any already-placed sibling
       let guardIter = 0;
       while (guardIter < 16) {
-        const hit = placedNodes.find((p) => nodesOverlap(node, p, 20));
+        const hit = placedNodes.find((p) => nodesOverlap(node, p, 24));
         if (!hit) break;
+        const hitPlace = effPlaceById.get(hit.id);
+        const vGap = Math.max(
+          48,
+          gapResolver.getRequiredGap([hit.id], [node.id], "vertical")
+        );
+        const hGap = Math.max(
+          44,
+          gapResolver.getRequiredGap([hit.id], [node.id], "horizontal")
+        );
         if (place?.above) {
-          node.y = hit.y - node.height - 24;
+          node.y = hit.y - node.height - vGap;
         } else if (place?.leftOf) {
-          node.x = hit.x - node.width - 28;
+          if (hitPlace?.leftOf && hitPlace.leftOf === place.leftOf) {
+            node.y = hit.y + hit.height + vGap;
+          } else {
+            node.x = hit.x - node.width - hGap;
+          }
+        } else if (place?.rightOf) {
+          if (hitPlace?.rightOf && hitPlace.rightOf === place.rightOf) {
+            node.y = hit.y + hit.height + vGap;
+          } else {
+            node.x = hit.x + hit.width + hGap;
+          }
         } else {
-          node.y = hit.y + hit.height + 24;
+          node.y = hit.y + hit.height + vGap;
         }
         guardIter++;
       }
@@ -5241,14 +5557,25 @@ function alignFacingPorts(
     (fromSide === "bottom" && toSide === "top") ||
     (fromSide === "top" && toSide === "bottom");
 
+  const isShapeSideCurved = (
+    shape                      ,
+    side          
+  )          => {
+    if (!shape || shape === "rect") return false;
+    // Queue has flat horizontal top/bottom edges; cylinder has flat vertical left/right walls
+    if (shape === "queue" && (side === "top" || side === "bottom")) return false;
+    if (shape === "cylinder" && (side === "left" || side === "right")) return false;
+    return true;
+  };
+
   const fixedFrom =
-    fromFixedRatio || Boolean(fromBox.shape && fromBox.shape !== "rect");
+    fromFixedRatio || isShapeSideCurved(fromBox.shape, fromSide);
   const fixedTo =
-    toFixedRatio || Boolean(toBox.shape && toBox.shape !== "rect");
+    toFixedRatio || isShapeSideCurved(toBox.shape, toSide);
 
   if (isOppositeHoriz) {
     const dy = Math.abs(p1[1] - p2[1]);
-    if (dy > 0.5 && dy <= 32) {
+    if (dy > 0.5 && dy <= 40) {
       const m1 = isFromSubAnchor
         ? Math.min(4, fromBox.height * 0.2)
         : Math.min(16, fromBox.height * 0.22);
@@ -5276,13 +5603,13 @@ function alignFacingPorts(
     }
   } else if (isOppositeVert) {
     const dx = Math.abs(p1[0] - p2[0]);
-    if (dx > 0.5 && dx <= 32) {
+    if (dx > 0.5 && dx <= 84) {
       const m1 = isFromSubAnchor
-        ? Math.min(6, fromBox.width * 0.2)
-        : Math.min(18, fromBox.width * 0.2);
+        ? Math.min(10, fromBox.width * 0.2)
+        : Math.min(20, fromBox.width * 0.2);
       const m2 = isToSubAnchor
-        ? Math.min(6, toBox.width * 0.2)
-        : Math.min(18, toBox.width * 0.2);
+        ? Math.min(10, toBox.width * 0.2)
+        : Math.min(20, toBox.width * 0.2);
       const min1 = fixedFrom ? p1[0] : fromBox.x + m1;
       const max1 = fixedFrom ? p1[0] : fromBox.x + fromBox.width - m1;
       const min2 = fixedTo ? p2[0] : toBox.x + m2;
@@ -5660,21 +5987,33 @@ function buildEdgeObstacles(
   toOwnerId        ,
   ownerFromBox             ,
   ownerToBox             ,
-  registry                             
+  registry                             ,
+  fromSide           ,
+  toSide           
 )                                                                  {
   const paddedObstacles                = [];
   const rawObstacles                = [];
 
-  // Shrink endpoint owner boxes by 3px so ports on their perimeter don't collide,
-  // while any segment cutting across their interior is rejected.
+  // Only inset endpoint owner boxes on the side where their port attaches,
+  // while keeping perpendicular edges flush/padded so detours never graze along an endpoint's top/bottom/side borders.
   const shrink = 3;
+  const makeEndpointObstacle = (
+    box             ,
+    portSide           
+  )              => {
+    const leftPad = portSide === "left" ? -shrink : 4;
+    const rightPad = portSide === "right" ? -shrink : 4;
+    const topPad = portSide === "top" ? -shrink : 4;
+    const botPad = portSide === "bottom" ? -shrink : 4;
+    return {
+      x: box.x - leftPad,
+      y: box.y - topPad,
+      width: Math.max(2, box.width + leftPad + rightPad),
+      height: Math.max(2, box.height + topPad + botPad),
+    };
+  };
   if (ownerFromBox.width > shrink * 2 && ownerFromBox.height > shrink * 2) {
-    paddedObstacles.push({
-      x: ownerFromBox.x + shrink,
-      y: ownerFromBox.y + shrink,
-      width: ownerFromBox.width - shrink * 2,
-      height: ownerFromBox.height - shrink * 2,
-    });
+    paddedObstacles.push(makeEndpointObstacle(ownerFromBox, fromSide));
     rawObstacles.push(ownerFromBox);
   }
   if (
@@ -5682,12 +6021,7 @@ function buildEdgeObstacles(
     ownerToBox.width > shrink * 2 &&
     ownerToBox.height > shrink * 2
   ) {
-    paddedObstacles.push({
-      x: ownerToBox.x + shrink,
-      y: ownerToBox.y + shrink,
-      width: ownerToBox.width - shrink * 2,
-      height: ownerToBox.height - shrink * 2,
-    });
+    paddedObstacles.push(makeEndpointObstacle(ownerToBox, toSide));
     rawObstacles.push(ownerToBox);
   }
 
@@ -5697,13 +6031,40 @@ function buildEdgeObstacles(
     if (box.ownerNodeId && box.ownerNodeId !== key) continue;
     if (key === fromOwnerId || key === toOwnerId) continue;
 
-    // Skip container groups that enclose either endpoint or child nodes inside either endpoint
+    // Skip container groups that enclose either endpoint or child nodes inside either endpoint,
+    // but protect the enclosing container's top header bar (36px) so internal edges never route across group titles.
     if (
       boxContainsBox(box, ownerFromBox) ||
       boxContainsBox(box, ownerToBox) ||
       boxContainsBox(ownerFromBox, box) ||
       boxContainsBox(ownerToBox, box)
     ) {
+      const containsFrom = boxContainsBox(box, ownerFromBox);
+      const containsTo = boxContainsBox(box, ownerToBox);
+      const isHorizFrom =
+        containsFrom && (fromSide === "left" || fromSide === "right");
+      const isHorizTo =
+        containsTo && (toSide === "left" || toSide === "right");
+      if (
+        (isHorizFrom || isHorizTo) &&
+        (!containsFrom || ownerFromBox.y >= box.y + 36) &&
+        (!containsTo || ownerToBox.y >= box.y + 36) &&
+        box.height > 64
+      ) {
+        const headerObs              = {
+          x: box.x + 4,
+          y: box.y,
+          width: Math.max(20, box.width - 8),
+          height: 44,
+        };
+        rawObstacles.push(headerObs);
+        paddedObstacles.push({
+          x: headerObs.x - pad,
+          y: headerObs.y - pad,
+          width: headerObs.width + pad * 2,
+          height: headerObs.height + pad * 2,
+        });
+      }
       continue;
     }
 
@@ -5805,9 +6166,151 @@ function pointInsideAnyObstacle(
   return false;
 }
 
+                         
+                  
+                
+              
+              
+ 
+
+function collectContainerBoxes(
+  registry                             
+)                                                                             {
+  const primaries                                           = [];
+  for (const [key, box] of Object.entries(registry)) {
+    if (box.ownerNodeId && box.ownerNodeId !== key) continue;
+    primaries.push({ key, box });
+  }
+  const containerBoxes                = [];
+  const containerHeaderObstacles                = [];
+  for (const p of primaries) {
+    const hasChild = primaries.some(
+      (other) => other.key !== p.key && boxContainsBox(p.box, other.box)
+    );
+    if (hasChild) {
+      containerBoxes.push(p.box);
+      if (p.box.height > 64) {
+        containerHeaderObstacles.push({
+          x: p.box.x + 6,
+          y: p.box.y + 4,
+          width: Math.max(20, p.box.width - 12),
+          height: 36,
+        });
+      }
+    }
+  }
+  return { containerBoxes, containerHeaderObstacles };
+}
+
+function extractOrthogonalSegments(pts                    )                  {
+  const segs                  = [];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i];
+    const b = pts[i + 1];
+    if (Math.abs(a[1] - b[1]) <= 0.5 && Math.abs(b[0] - a[0]) > 2) {
+      segs.push({
+        axis: "h",
+        coord: (a[1] + b[1]) / 2,
+        min: Math.min(a[0], b[0]),
+        max: Math.max(a[0], b[0]),
+      });
+    } else if (Math.abs(a[0] - b[0]) <= 0.5 && Math.abs(b[1] - a[1]) > 2) {
+      segs.push({
+        axis: "v",
+        coord: (a[0] + b[0]) / 2,
+        min: Math.min(a[1], b[1]),
+        max: Math.max(a[1], b[1]),
+      });
+    }
+  }
+  return segs;
+}
+
+function segmentOverlapsRouted(
+  axis           ,
+  coord        ,
+  min        ,
+  max        ,
+  routedSegments                 ,
+  tol = 9
+)          {
+  for (const seg of routedSegments) {
+    if (seg.axis !== axis) continue;
+    if (Math.abs(seg.coord - coord) < tol) {
+      if (Math.min(max, seg.max) > Math.max(min, seg.min) + 2) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function segmentCoincidesWithContainerBorder(
+  axis           ,
+  coord        ,
+  min        ,
+  max        ,
+  containerBoxes               ,
+  tol = 9
+)          {
+  for (const c of containerBoxes) {
+    if (axis === "v") {
+      if (
+        (Math.abs(coord - c.x) < tol ||
+          Math.abs(coord - (c.x + c.width)) < tol) &&
+        max > c.y - 4 &&
+        min < c.y + c.height + 4
+      ) {
+        return true;
+      }
+    } else {
+      if (
+        (Math.abs(coord - c.y) < tol ||
+          Math.abs(coord - (c.y + c.height)) < tol) &&
+        max > c.x - 4 &&
+        min < c.x + c.width + 4
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function polylineHasTrackOrBorderCollision(
+  pts                    ,
+  routedSegments                 ,
+  containerBoxes               
+)          {
+  const segs = extractOrthogonalSegments(pts);
+  for (let i = 0; i < segs.length; i++) {
+    const s = segs[i];
+    // Skip very short endpoint port stubs (< 14px) attached directly to ports
+    if ((i === 0 || i === segs.length - 1) && s.max - s.min < 14) continue;
+    if (
+      segmentOverlapsRouted(s.axis, s.coord, s.min, s.max, routedSegments, 8)
+    ) {
+      return true;
+    }
+    if (
+      segmentCoincidesWithContainerBorder(
+        s.axis,
+        s.coord,
+        s.min,
+        s.max,
+        containerBoxes,
+        8
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Finds a minimum-bend, shortest-path orthogonal route from p1 to p2 on a Hanan visibility grid
- * avoiding all intermediate and endpoint obstacle bounding boxes.
+ * avoiding all intermediate and endpoint obstacle bounding boxes, container borders, and previously routed tracks.
  */
 function findObstacleFreeOrthogonalPath(
   p1                  ,
@@ -5816,37 +6319,82 @@ function findObstacleFreeOrthogonalPath(
   side2          ,
   rawObstacles               ,
   paddedObstacles               ,
-  stub = 20
+  stub = 20,
+  routedSegments                  = [],
+  containerBoxes                = []
 )                            {
   const [n1x, n1y] = getNormalVector(side1);
   const [n2x, n2y] = getNormalVector(side2);
 
-  let s1                   = [p1[0] + n1x * stub, p1[1] + n1y * stub];
-  if (
-    pointInsideAnyObstacle(s1, paddedObstacles) ||
-    polylineHitsObstacles([p1, s1], paddedObstacles)
-  ) {
-    const shortStub                   = [p1[0] + n1x * 8, p1[1] + n1y * 8];
-    s1 = !polylineHitsObstacles([p1, shortStub], paddedObstacles)
-      ? shortStub
-      : p1;
-  }
+  const computeCleanStub = (
+    p                  ,
+    side          ,
+    nx        ,
+    ny        
+  )                   => {
+    let s                   = [p[0] + nx * stub, p[1] + ny * stub];
+    // If stub lands right on an enclosing container border (e.g. group pad=20 == stub=20), push it cleanly outside
+    for (const c of containerBoxes) {
+      const pInside =
+        p[0] > c.x + 2 &&
+        p[0] < c.x + c.width - 2 &&
+        p[1] > c.y + 2 &&
+        p[1] < c.y + c.height - 2;
+      if (!pInside) continue;
+      if (side === "right" && Math.abs(s[0] - (c.x + c.width)) < 12) {
+        const pushed                   = [c.x + c.width + 18, p[1]];
+        if (!polylineHitsObstacles([p, pushed], paddedObstacles)) s = pushed;
+      } else if (side === "left" && Math.abs(s[0] - c.x) < 12) {
+        const pushed                   = [c.x - 18, p[1]];
+        if (!polylineHitsObstacles([p, pushed], paddedObstacles)) s = pushed;
+      } else if (side === "bottom" && Math.abs(s[1] - (c.y + c.height)) < 12) {
+        const pushed                   = [p[0], c.y + c.height + 18];
+        if (!polylineHitsObstacles([p, pushed], paddedObstacles)) s = pushed;
+      } else if (side === "top" && Math.abs(s[1] - c.y) < 12) {
+        const pushed                   = [p[0], c.y - 18];
+        if (!polylineHitsObstacles([p, pushed], paddedObstacles)) s = pushed;
+      }
+    }
+    if (
+      pointInsideAnyObstacle(s, paddedObstacles) ||
+      polylineHitsObstacles([p, s], paddedObstacles)
+    ) {
+      const shortStub                   = [p[0] + nx * 8, p[1] + ny * 8];
+      s = !polylineHitsObstacles([p, shortStub], paddedObstacles)
+        ? shortStub
+        : p;
+    } else if (routedSegments.length > 0) {
+      // If the default 20px stub lands directly on top of a previously routed perpendicular track,
+      // step back to a 10px stub so Dijkstra can branch onto a clean parallel lane right away.
+      const perpAxis            = side === "top" || side === "bottom" ? "h" : "v";
+      const sCoord = perpAxis === "h" ? s[1] : s[0];
+      const sPerp = perpAxis === "h" ? s[0] : s[1];
+      const hitsPerpTrack = routedSegments.some(
+        (seg) =>
+          seg.axis === perpAxis &&
+          Math.abs(seg.coord - sCoord) < 10 &&
+          sPerp >= seg.min - 24 &&
+          sPerp <= seg.max + 24
+      );
+      if (hitsPerpTrack) {
+        const shortStub                   = [p[0] + nx * 10, p[1] + ny * 10];
+        if (!polylineHitsObstacles([p, shortStub], paddedObstacles)) {
+          s = shortStub;
+        }
+      }
+    }
+    return s;
+  };
 
-  let s2                   = [p2[0] + n2x * stub, p2[1] + n2y * stub];
-  if (
-    pointInsideAnyObstacle(s2, paddedObstacles) ||
-    polylineHitsObstacles([s2, p2], paddedObstacles)
-  ) {
-    const shortStub                   = [p2[0] + n2x * 8, p2[1] + n2y * 8];
-    s2 = !polylineHitsObstacles([shortStub, p2], paddedObstacles)
-      ? shortStub
-      : p2;
-  }
+  const s1 = computeCleanStub(p1, side1, n1x, n1y);
+  const s2 = computeCleanStub(p2, side2, n2x, n2y);
 
-  const clearance = 18;
+  const clearances = [18, 32];
   const xSet = new Set        ([
     Math.round(p1[0]),
     Math.round(p2[0]),
+    Math.round(p1[0] + n1x * 12),
+    Math.round(p2[0] + n2x * 12),
     Math.round(s1[0]),
     Math.round(s2[0]),
     Math.round((s1[0] + s2[0]) / 2),
@@ -5854,27 +6402,51 @@ function findObstacleFreeOrthogonalPath(
   const ySet = new Set        ([
     Math.round(p1[1]),
     Math.round(p2[1]),
+    Math.round(p1[1] + n1y * 12),
+    Math.round(p2[1] + n2y * 12),
     Math.round(s1[1]),
     Math.round(s2[1]),
     Math.round((s1[1] + s2[1]) / 2),
   ]);
 
   for (const b of rawObstacles) {
-    xSet.add(Math.round(b.x - clearance));
-    xSet.add(Math.round(b.x + b.width + clearance));
-    ySet.add(Math.round(b.y - clearance));
-    ySet.add(Math.round(b.y + b.height + clearance));
+    for (const cl of clearances) {
+      xSet.add(Math.round(b.x - cl));
+      xSet.add(Math.round(b.x + b.width + cl));
+      ySet.add(Math.round(b.y - cl));
+      ySet.add(Math.round(b.y + b.height + cl));
+    }
+  }
+
+  for (const c of containerBoxes) {
+    for (const cl of clearances) {
+      xSet.add(Math.round(c.x - cl));
+      xSet.add(Math.round(c.x + c.width + cl));
+      ySet.add(Math.round(c.y - cl));
+      ySet.add(Math.round(c.y + c.height + cl));
+    }
+  }
+
+  // Add shifted alternate parallel tracks around already-routed segments so edges fan into parallel lanes
+  for (const seg of routedSegments) {
+    if (seg.axis === "v") {
+      xSet.add(Math.round(seg.coord - 14));
+      xSet.add(Math.round(seg.coord + 14));
+    } else {
+      ySet.add(Math.round(seg.coord - 14));
+      ySet.add(Math.round(seg.coord + 14));
+    }
   }
 
   const baseXs = Array.from(xSet).sort((a, b) => a - b);
   const baseYs = Array.from(ySet).sort((a, b) => a - b);
   for (let i = 0; i < baseXs.length - 1; i++) {
-    if (baseXs[i + 1] - baseXs[i] > 16) {
+    if (baseXs[i + 1] - baseXs[i] > 24) {
       xSet.add(Math.round((baseXs[i] + baseXs[i + 1]) / 2));
     }
   }
   for (let i = 0; i < baseYs.length - 1; i++) {
-    if (baseYs[i + 1] - baseYs[i] > 16) {
+    if (baseYs[i + 1] - baseYs[i] > 24) {
       ySet.add(Math.round((baseYs[i] + baseYs[i + 1]) / 2));
     }
   }
@@ -5956,6 +6528,33 @@ function findObstacleFreeOrthogonalPath(
       let extraCost = uDir !== vDir ? bendPenalty : 0;
       if (vXi === endXi && vYi === endYi && vDir !== targetDir) {
         extraCost += bendPenalty;
+      }
+
+      // Penalize overlapping previously routed edge segments (track reservation)
+      const axis            = vDir === 0 ? "h" : "v";
+      const coord = vDir === 0 ? uy : ux;
+      const segMin = vDir === 0 ? Math.min(ux, vx) : Math.min(uy, vy);
+      const segMax = vDir === 0 ? Math.max(ux, vx) : Math.max(uy, vy);
+      if (
+        routedSegments.length > 0 &&
+        segmentOverlapsRouted(axis, coord, segMin, segMax, routedSegments, 10)
+      ) {
+        extraCost += 480 + segLen * 3;
+      }
+
+      // Penalize riding directly on top of a Group/Window container border
+      if (
+        containerBoxes.length > 0 &&
+        segmentCoincidesWithContainerBorder(
+          axis,
+          coord,
+          segMin,
+          segMax,
+          containerBoxes,
+          10
+        )
+      ) {
+        extraCost += 650 + segLen * 4;
       }
 
       const vState = encode(vXi, vYi, vDir);
@@ -6070,7 +6669,9 @@ function evalPointAlongPolyline(
 
 function findLongestClearSegmentMidpoint(
   pts                    ,
-  obstacles               
+  obstacles               ,
+  labelW = 80,
+  labelH = 22
 )                   {
   if (pts.length === 0) return [0, 0];
   if (pts.length === 1) return pts[0];
@@ -6081,19 +6682,43 @@ function findLongestClearSegmentMidpoint(
   ];
   let bestScore = -Infinity;
 
+  const sampleRatios = [0.5, 0.38, 0.62, 0.26, 0.74];
+
   for (let i = 0; i < pts.length - 1; i++) {
     const a = pts[i];
     const b = pts[i + 1];
     const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
-    const mid                   = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
-    const hitObs = pointInsideAnyObstacle(mid, obstacles);
-    // Prefer middle segments of a multi-segment route that are long and clear of obstacles
+    if (len < 8) continue;
     const isInteriorSeg = pts.length >= 4 && i > 0 && i < pts.length - 2;
-    const score =
-      len + (isInteriorSeg ? 35 : 0) - (hitObs ? 1000 : 0);
-    if (score > bestScore) {
-      bestScore = score;
-      bestMid = mid;
+
+    for (const r of sampleRatios) {
+      const pt                   = [
+        a[0] + (b[0] - a[0]) * r,
+        a[1] + (b[1] - a[1]) * r,
+      ];
+      const lBox              = {
+        x: pt[0] - labelW / 2,
+        y: pt[1] - labelH / 2,
+        width: labelW,
+        height: labelH,
+      };
+      const ptHits = pointInsideAnyObstacle(pt, obstacles);
+      let boxHitCount = 0;
+      for (const obs of obstacles) {
+        if (boxesOverlap(lBox, obs, 2)) {
+          boxHitCount++;
+        }
+      }
+      const centerBias = 1 - Math.abs(r - 0.5) * 0.4;
+      const score =
+        len * centerBias +
+        (isInteriorSeg ? 35 : 0) -
+        (ptHits ? 2000 : 0) -
+        boxHitCount * 900;
+      if (score > bestScore) {
+        bestScore = score;
+        bestMid = pt;
+      }
     }
   }
   return bestMid;
@@ -6132,6 +6757,33 @@ function boxesOverlap(
 // Main Connection Routing Pipeline
 // ============================================================================
 
+function resolveAnchorBoxWithFallback(
+  targetId        ,
+  anchorRegistry                             
+)                                                       {
+  if (anchorRegistry[targetId]) {
+    return { resolvedId: targetId, box: anchorRegistry[targetId] };
+  }
+  const dotIdx = targetId.indexOf(".");
+  if (dotIdx > 0) {
+    const baseId = targetId.slice(0, dotIdx);
+    const subId = targetId.slice(dotIdx + 1);
+    // 1-indexed field_N fallback for 0-indexed bitfield sub-anchors (field_0 .. field_{N-1})
+    const fieldMatch = subId.match(/^field_(\d+)$/);
+    if (fieldMatch) {
+      const oneBasedIdx = parseInt(fieldMatch[1], 10) - 1;
+      const zeroBasedId = `${baseId}.field_${oneBasedIdx}`;
+      if (oneBasedIdx >= 0 && anchorRegistry[zeroBasedId]) {
+        return { resolvedId: zeroBasedId, box: anchorRegistry[zeroBasedId] };
+      }
+    }
+    if (anchorRegistry[baseId]) {
+      return { resolvedId: baseId, box: anchorRegistry[baseId] };
+    }
+  }
+  return { resolvedId: targetId, box: undefined };
+}
+
 export function routeConnections(
   connections                              ,
   anchorRegistry                             ,
@@ -6141,16 +6793,31 @@ export function routeConnections(
 )              {
   if (!connections || connections.length === 0) return [];
 
+  const { containerBoxes, containerHeaderObstacles } =
+    collectContainerBoxes(anchorRegistry);
+
   // Pass 1: Resolve endpoints, containers, sides, and collect port groups for Port Multiplexing
   const prepared                     = [];
+  let compactSkipSideToggle = 0;
 
   connections.forEach((conn, idx) => {
     const id = conn.id || `edge_${idx + 1}`;
     const fromParsed = parseEndpoint(conn.from);
     const toParsed = parseEndpoint(conn.to);
 
-    const fromBox = anchorRegistry[fromParsed.targetId];
-    const toBox = anchorRegistry[toParsed.targetId];
+    const fromResolved = resolveAnchorBoxWithFallback(
+      fromParsed.targetId,
+      anchorRegistry
+    );
+    const toResolved = resolveAnchorBoxWithFallback(
+      toParsed.targetId,
+      anchorRegistry
+    );
+    fromParsed.targetId = fromResolved.resolvedId;
+    toParsed.targetId = toResolved.resolvedId;
+
+    const fromBox = fromResolved.box;
+    const toBox = toResolved.box;
     if (!fromBox || !toBox) {
       return;
     }
@@ -6176,12 +6843,168 @@ export function routeConnections(
       isSelfLoop
     );
 
+    const isSideBlockedBySibling = (
+      box             ,
+      ownerId        ,
+      side          
+    )          => {
+      if (side === "center") return false;
+      const [nx, ny] = getNormalVector(side);
+      const probePt                   = [
+        box.x + box.width / 2 + nx * 22,
+        box.y + box.height / 2 + ny * 22,
+      ];
+      if (side === "top") probePt[1] = box.y - 18;
+      else if (side === "bottom") probePt[1] = box.y + box.height + 18;
+      else if (side === "left") probePt[0] = box.x - 18;
+      else if (side === "right") probePt[0] = box.x + box.width + 18;
+
+      for (const [k, other] of Object.entries(anchorRegistry)) {
+        if (other.ownerNodeId && other.ownerNodeId !== k) continue;
+        if (k === ownerId) continue;
+        if (boxContainsBox(other, box) || boxContainsBox(box, other)) continue;
+        if (
+          probePt[0] >= other.x - 4 &&
+          probePt[0] <= other.x + other.width + 4 &&
+          probePt[1] >= other.y - 4 &&
+          probePt[1] <= other.y + other.height + 4
+        ) {
+          return true;
+        }
+      }
+      return false;
+    };
+
+    const pickUnblockedSide = (
+      preferred          ,
+      box             ,
+      ownerId        ,
+      otherBox             
+    )           => {
+      if (!isSideBlockedBySibling(box, ownerId, preferred)) return preferred;
+      const cx1 = box.x + box.width / 2;
+      const cy1 = box.y + box.height / 2;
+      const cx2 = otherBox.x + otherBox.width / 2;
+      const cy2 = otherBox.y + otherBox.height / 2;
+      const altCandidates             =
+        preferred === "top" || preferred === "bottom"
+          ? cx2 >= cx1
+            ? ["right", "left"]
+            : ["left", "right"]
+          : cy2 >= cy1
+          ? ["bottom", "top"]
+          : ["top", "bottom"];
+      for (const alt of altCandidates) {
+        if (!isSideBlockedBySibling(box, ownerId, alt)) return alt;
+      }
+      return preferred;
+    };
+
     let fromSide = compact
-      ? autoSides.fromSide
+      ? pickUnblockedSide(
+          autoSides.fromSide,
+          ownerFromBox,
+          fromOwnerId,
+          ownerToBox
+        )
       : fromParsed.side || autoSides.fromSide;
     let toSide = compact
-      ? autoSides.toSide
+      ? pickUnblockedSide(
+          autoSides.toSide,
+          ownerToBox,
+          toOwnerId,
+          ownerFromBox
+        )
       : toParsed.side || autoSides.toSide;
+
+    // In compact vertical mode, detect skip-level (leapfrog) vertical edges where another node sits directly
+    // between ownerFromBox and ownerToBox. Convert them from 4-bend S-hooks into clean 2-bend outer C-brackets
+    // (left->left or right->right), alternating sides for balanced visual symmetry.
+    if (
+      compact &&
+      !isSelfLoop &&
+      ((fromSide === "bottom" && toSide === "top") ||
+        (fromSide === "top" && toSide === "bottom"))
+    ) {
+      const upperBox =
+        ownerFromBox.y <= ownerToBox.y ? ownerFromBox : ownerToBox;
+      const lowerBox =
+        ownerFromBox.y <= ownerToBox.y ? ownerToBox : ownerFromBox;
+      const bandTop = upperBox.y + upperBox.height + 2;
+      const bandBot = lowerBox.y - 2;
+      if (bandBot > bandTop + 16) {
+        const cx1 = upperBox.x + upperBox.width / 2;
+        const cx2 = lowerBox.x + lowerBox.width / 2;
+        const xSpanMin = Math.min(cx1, cx2) - 24;
+        const xSpanMax = Math.max(cx1, cx2) + 24;
+        let hasIntermediateBlocker = false;
+        for (const [k, other] of Object.entries(anchorRegistry)) {
+          if (other.ownerNodeId && other.ownerNodeId !== k) continue;
+          if (k === fromOwnerId || k === toOwnerId) continue;
+          if (
+            boxContainsBox(other, ownerFromBox) ||
+            boxContainsBox(other, ownerToBox) ||
+            boxContainsBox(ownerFromBox, other) ||
+            boxContainsBox(ownerToBox, other)
+          ) {
+            continue;
+          }
+          if (
+            other.y < bandBot &&
+            other.y + other.height > bandTop &&
+            other.x < xSpanMax &&
+            other.x + other.width > xSpanMin
+          ) {
+            hasIntermediateBlocker = true;
+            break;
+          }
+        }
+
+        if (hasIntermediateBlocker) {
+          // Prefer alternating left/right outer channels, respecting explicit sub-anchor side hint if available
+          const preferredSkipSide           =
+            compactSkipSideToggle % 2 === 0 ? "left" : "right";
+          const altSkipSide           =
+            preferredSkipSide === "left" ? "right" : "left";
+          const chosenSide =
+            !isSideBlockedBySibling(ownerFromBox, fromOwnerId, preferredSkipSide) &&
+            !isSideBlockedBySibling(ownerToBox, toOwnerId, preferredSkipSide)
+              ? preferredSkipSide
+              : !isSideBlockedBySibling(ownerFromBox, fromOwnerId, altSkipSide) &&
+                !isSideBlockedBySibling(ownerToBox, toOwnerId, altSkipSide)
+              ? altSkipSide
+              : null;
+          if (chosenSide) {
+            fromSide = chosenSide;
+            toSide = chosenSide;
+            compactSkipSideToggle++;
+          }
+        }
+      }
+    }
+
+    // In compact mode, if fromSide had to detour horizontally (left/right) around a stacked sibling
+    // and toSide is "top" directly under an enclosing container's title bar, match the horizontal side
+    // so the edge forms a clean outside C-bracket instead of penetrating the target group's header.
+    if (
+      compact &&
+      !isSelfLoop &&
+      (fromSide === "left" || fromSide === "right") &&
+      toSide === "top"
+    ) {
+      const targetUnderContainerHeader = containerBoxes.some(
+        (c) =>
+          boxContainsBox(c, ownerToBox) &&
+          !boxContainsBox(c, ownerFromBox) &&
+          ownerToBox.y >= c.y + 36
+      );
+      if (
+        targetUnderContainerHeader &&
+        !isSideBlockedBySibling(ownerToBox, toOwnerId, fromSide)
+      ) {
+        toSide = fromSide;
+      }
+    }
 
     if (isSelfLoop && !fromParsed.side && toParsed.side) {
       fromSide = toParsed.side === "top" ? "right" : "top";
@@ -6215,6 +7038,8 @@ export function routeConnections(
       fromMultiplexed: false,
       toMultiplexed: false,
       corridorOffset: 0,
+      corridorBundleIndex: 0,
+      corridorBundleSize: 1,
     });
   });
 
@@ -6288,6 +7113,97 @@ export function routeConnections(
     });
   });
 
+  // Pass 1b-2: Same-Owner-Side De-crowding (when a whole-node port and a sub-anchor port share the same owner side)
+  const ownerSideGroups = new Map                         ();
+  for (const item of prepared) {
+    if (!item.fromParsed.explicitRatio && item.fromSide !== "center") {
+      const oKey = `${item.fromOwnerId}::${item.fromSide}`;
+      const isHoriz = item.fromSide === "left" || item.fromSide === "right";
+      const otherCoord = isHoriz
+        ? item.toBox.y + item.toBox.height / 2
+        : item.toBox.x + item.toBox.width / 2;
+      const list = ownerSideGroups.get(oKey) || [];
+      list.push({ item, end: "from", sortCoord: otherCoord });
+      ownerSideGroups.set(oKey, list);
+    }
+    if (!item.toParsed.explicitRatio && item.toSide !== "center") {
+      const oKey = `${item.toOwnerId}::${item.toSide}`;
+      const isHoriz = item.toSide === "left" || item.toSide === "right";
+      const otherCoord = isHoriz
+        ? item.fromBox.y + item.fromBox.height / 2
+        : item.fromBox.x + item.fromBox.width / 2;
+      const list = ownerSideGroups.get(oKey) || [];
+      list.push({ item, end: "to", sortCoord: otherCoord });
+      ownerSideGroups.set(oKey, list);
+    }
+  }
+
+  ownerSideGroups.forEach((entries) => {
+    if (entries.length <= 1) return;
+    // Only de-crowd when whole-node ports and sub-anchor ports share the same owner side;
+    // pure whole-node fan-out is already symmetrically multiplexed by Pass 1b.
+    const hasSub = entries.some((e) =>
+      e.end === "from" ? e.item.isFromSubAnchor : e.item.isToSubAnchor
+    );
+    const hasWhole = entries.some(
+      (e) => !(e.end === "from" ? e.item.isFromSubAnchor : e.item.isToSubAnchor)
+    );
+    if (!hasSub || !hasWhole) return;
+    const getCoord = (e               )         => {
+      const side = e.end === "from" ? e.item.fromSide : e.item.toSide;
+      const box = e.end === "from" ? e.item.fromBox : e.item.toBox;
+      const ratio = e.end === "from" ? e.item.fromRatio : e.item.toRatio;
+      const isHoriz = side === "left" || side === "right";
+      return isHoriz ? box.y + box.height * ratio : box.x + box.width * ratio;
+    };
+
+    for (const e of entries) {
+      const isSub =
+        e.end === "from" ? e.item.isFromSubAnchor : e.item.isToSubAnchor;
+      if (isSub) continue;
+      const ownerBox =
+        e.end === "from" ? e.item.outerFromBox : e.item.outerToBox;
+      const side = e.end === "from" ? e.item.fromSide : e.item.toSide;
+      const isHoriz = side === "left" || side === "right";
+      const start = isHoriz ? ownerBox.y : ownerBox.x;
+      const span = isHoriz ? ownerBox.height : ownerBox.width;
+      if (span <= 40) continue;
+
+      // Project desired coordinate toward target center, clamped to [0.18, 0.82]
+      let targetRatio = Math.max(
+        0.18,
+        Math.min(0.82, (e.sortCoord - start) / span)
+      );
+      let candidateCoord = start + span * targetRatio;
+
+      // Ensure at least 44px separation from all sibling sub-anchor ports on the same owner side
+      for (const other of entries) {
+        if (other === e) continue;
+        const otherCoord = getCoord(other);
+        if (Math.abs(candidateCoord - otherCoord) < 44) {
+          const dir =
+            e.sortCoord >= other.sortCoord
+              ? 1
+              : -1;
+          const shifted = otherCoord + dir * 48;
+          targetRatio = Math.max(
+            0.15,
+            Math.min(0.85, (shifted - start) / span)
+          );
+          candidateCoord = start + span * targetRatio;
+        }
+      }
+
+      if (e.end === "from") {
+        e.item.fromRatio = targetRatio;
+        e.item.fromMultiplexed = true;
+      } else {
+        e.item.toRatio = targetRatio;
+        e.item.toMultiplexed = true;
+      }
+    }
+  });
+
   // Pass 1c: Parallel Corridor Channel Offsetting (separate multiple Z-bends in the same corridor)
   const corridorGroups = new Map                            ();
   for (const item of prepared) {
@@ -6306,15 +7222,106 @@ export function routeConnections(
       corridorGroups.set(k, list);
     }
   }
-  corridorGroups.forEach((items) => {
-    if (items.length <= 1) return;
-    items.forEach((it, i) => {
-      it.corridorOffset = (i - (items.length - 1) / 2) * 14;
-    });
+  corridorGroups.forEach((allItems, key) => {
+    if (allItems.length <= 1) return;
+    const isHorizCorridor = key.startsWith("H::");
+
+    // Partition items in the same corridor into connected components whose perpendicular spans overlap,
+    // so e.g. a left-branch edge doesn't get pushed off-center by 3 right-branch edges in the same vertical gap.
+    const getPerpSpan = (it                  )                   => {
+      if (isHorizCorridor) {
+        const y1 = it.fromBox.y + it.fromBox.height * it.fromRatio;
+        const y2 = it.toBox.y + it.toBox.height * it.toRatio;
+        return [Math.min(y1, y2) - 18, Math.max(y1, y2) + 18];
+      }
+      const x1 = it.fromBox.x + it.fromBox.width * it.fromRatio;
+      const x2 = it.toBox.x + it.toBox.width * it.toRatio;
+      return [Math.min(x1, x2) - 24, Math.max(x1, x2) + 24];
+    };
+
+    const spans = allItems.map(getPerpSpan);
+    const visitedComp = new Array         (allItems.length).fill(false);
+    const components                       = [];
+
+    for (let i = 0; i < allItems.length; i++) {
+      if (visitedComp[i]) continue;
+      const comp                     = [];
+      const stack = [i];
+      visitedComp[i] = true;
+      while (stack.length > 0) {
+        const idx = stack.pop() ;
+        comp.push(allItems[idx]);
+        const [aMin, aMax] = spans[idx];
+        for (let j = 0; j < allItems.length; j++) {
+          if (visitedComp[j]) continue;
+          const [bMin, bMax] = spans[j];
+          if (Math.min(aMax, bMax) >= Math.max(aMin, bMin)) {
+            visitedComp[j] = true;
+            stack.push(j);
+          }
+        }
+      }
+      components.push(comp);
+    }
+
+    for (const items of components) {
+      if (items.length <= 1) continue;
+      let railStep = 16;
+
+      if (isHorizCorridor) {
+        // Planar PCB bus ordering: if edges generally go upward (toY < fromY), sort top-to-bottom
+        // so the top edge bends first (leftmost rail) and bottom edge bends last (rightmost rail), minimizing crossings.
+        let sumDy = 0;
+        for (const it of items) {
+          const fy = it.fromBox.y + it.fromBox.height * it.fromRatio;
+          const ty = it.toBox.y + it.toBox.height * it.toRatio;
+          sumDy += ty - fy;
+        }
+        const goingUp = sumDy <= 0;
+        items.sort((a, b) => {
+          const ay = a.fromBox.y + a.fromBox.height * a.fromRatio;
+          const by = b.fromBox.y + b.fromBox.height * b.fromRatio;
+          return goingUp ? ay - by : by - ay;
+        });
+      } else {
+        let sumDx = 0;
+        for (const it of items) {
+          const fx = it.fromBox.x + it.fromBox.width * it.fromRatio;
+          const tx = it.toBox.x + it.toBox.width * it.toRatio;
+          sumDx += tx - fx;
+        }
+        const goingLeft = sumDx <= 0;
+        items.sort((a, b) => {
+          const ax = a.fromBox.x + a.fromBox.width * a.fromRatio;
+          const bx = b.fromBox.x + b.fromBox.width * b.fromRatio;
+          return goingLeft ? ax - bx : bx - ax;
+        });
+
+        // In vertical corridors with multiple labeled horizontal rails, spread rails generously (up to 28px pitch)
+        // so 22px-tall labels have breathing room and stay centered directly on their horizontal rail.
+        const vBounds = items[0].corridor.vert;
+        if (vBounds) {
+          const avail = vBounds[1] - vBounds[0] - 38;
+          if (avail > 0) {
+            railStep = Math.max(
+              16,
+              Math.min(28, Math.floor(avail / (items.length - 1)))
+            );
+          }
+        }
+      }
+
+      items.forEach((it, i) => {
+        it.corridorOffset = (i - (items.length - 1) / 2) * railStep;
+        it.corridorBundleIndex = i;
+        it.corridorBundleSize = items.length;
+      });
+    }
   });
 
   // Pass 2: Route paths and place labels
   const edges              = [];
+  const routedSegments                  = [];
   const placedLabelBoxes         
               
               
@@ -6348,6 +7355,8 @@ export function routeConnections(
       fromMultiplexed,
       toMultiplexed,
       corridorOffset,
+      corridorBundleIndex,
+      corridorBundleSize,
     } = item;
 
     const p1 = getProjectedPortPoint(
@@ -6383,13 +7392,51 @@ export function routeConnections(
     const routing = conn.routing || "orthogonal";
     const cornerRadius = conn.cornerRadius ?? 8;
     const stub = conn.stub ?? 20;
+    const startMarker = conn.startMarker || "none";
+    const endMarker = conn.endMarker || "arrow";
+    const hasStartArrow = startMarker === "arrow";
+    const hasEndArrow = endMarker === "arrow";
+    // Unified arrow pullback standard: 7.0px marker tip extension (9.5 - 2.5) + 0.7px target border half-stroke (1.5px / 2)
+    // so the arrowhead tip kisses the outer edge of the target border without overlapping across the border stroke.
+    const ARROW_PULLBACK = 7.7;
+
+    const pullbackPolyline = (
+      pts                    
+    )                     => {
+      if (pts.length < 2 || (!hasStartArrow && !hasEndArrow)) return pts;
+      const copy = pts.map((pt) => [pt[0], pt[1]]                    );
+      if (hasStartArrow) {
+        const dx = copy[1][0] - copy[0][0];
+        const dy = copy[1][1] - copy[0][1];
+        const len = Math.hypot(dx, dy);
+        if (len > 4) {
+          const pull = Math.min(ARROW_PULLBACK, len * 0.45);
+          copy[0][0] += (dx / len) * pull;
+          copy[0][1] += (dy / len) * pull;
+        }
+      }
+      if (hasEndArrow) {
+        const lastIdx = copy.length - 1;
+        const dx = copy[lastIdx][0] - copy[lastIdx - 1][0];
+        const dy = copy[lastIdx][1] - copy[lastIdx - 1][1];
+        const len = Math.hypot(dx, dy);
+        if (len > 4) {
+          const pull = Math.min(ARROW_PULLBACK, len * 0.45);
+          copy[lastIdx][0] -= (dx / len) * pull;
+          copy[lastIdx][1] -= (dy / len) * pull;
+        }
+      }
+      return copy;
+    };
 
     const { paddedObstacles, rawObstacles } = buildEdgeObstacles(
       fromOwnerId,
       toOwnerId,
       ownerFromBox,
       ownerToBox,
-      anchorRegistry
+      anchorRegistry,
+      fromSide,
+      toSide
     );
 
     let pathD = "";
@@ -6406,15 +7453,17 @@ export function routeConnections(
         ownerFromBox,
         stub
       );
-      pathD = buildRoundedPolylinePath(points, cornerRadius);
+      pathD = buildRoundedPolylinePath(pullbackPolyline(points), cornerRadius);
     } else if (routing === "straight") {
-      pathD = `M ${Math.round(p1[0])} ${Math.round(p1[1])} L ${Math.round(p2[0])} ${Math.round(p2[1])}`;
+      const renderPts = pullbackPolyline([p1, p2]);
+      pathD = `M ${renderPts[0][0].toFixed(1)} ${renderPts[0][1].toFixed(1)} L ${renderPts[1][0].toFixed(1)} ${renderPts[1][1].toFixed(1)}`;
     } else if (routing === "curved") {
       if (
         (Math.abs(p1[0] - p2[0]) <= 1 || Math.abs(p1[1] - p2[1]) <= 1) &&
         !polylineHitsObstacles([p1, p2], paddedObstacles)
       ) {
-        pathD = `M ${Math.round(p1[0])} ${Math.round(p1[1])} L ${Math.round(p2[0])} ${Math.round(p2[1])}`;
+        const renderPts = pullbackPolyline([p1, p2]);
+        pathD = `M ${renderPts[0][0].toFixed(1)} ${renderPts[0][1].toFixed(1)} L ${renderPts[1][0].toFixed(1)} ${renderPts[1][1].toFixed(1)}`;
         points = [p1, p2];
       } else {
         const [n1x, n1y] = getNormalVector(fromSide);
@@ -6439,8 +7488,14 @@ export function routeConnections(
           p2[0] + n2x * controlLen,
           p2[1] + n2y * controlLen,
         ];
+        const renderP1                   = hasStartArrow
+          ? [p1[0] + n1x * ARROW_PULLBACK, p1[1] + n1y * ARROW_PULLBACK]
+          : p1;
+        const renderP2                   = hasEndArrow
+          ? [p2[0] + n2x * ARROW_PULLBACK, p2[1] + n2y * ARROW_PULLBACK]
+          : p2;
         bezierControls = [c1, c2];
-        pathD = `M ${Math.round(p1[0])} ${Math.round(p1[1])} C ${Math.round(c1[0])} ${Math.round(c1[1])}, ${Math.round(c2[0])} ${Math.round(c2[1])}, ${Math.round(p2[0])} ${Math.round(p2[1])}`;
+        pathD = `M ${renderP1[0].toFixed(1)} ${renderP1[1].toFixed(1)} C ${c1[0].toFixed(1)} ${c1[1].toFixed(1)}, ${c2[0].toFixed(1)} ${c2[1].toFixed(1)}, ${renderP2[0].toFixed(1)} ${renderP2[1].toFixed(1)}`;
         points = [
           p1,
           evalCubicBezier(p1, c1, c2, p2, 0.25),
@@ -6462,7 +7517,10 @@ export function routeConnections(
         corridorOffset
       );
 
-      if (polylineHitsObstacles(points, paddedObstacles)) {
+      if (
+        polylineHitsObstacles(points, paddedObstacles) ||
+        polylineHasTrackOrBorderCollision(points, routedSegments, containerBoxes)
+      ) {
         const detour = findObstacleFreeOrthogonalPath(
           p1,
           fromSide,
@@ -6470,7 +7528,9 @@ export function routeConnections(
           toSide,
           rawObstacles,
           paddedObstacles,
-          stub
+          stub,
+          routedSegments,
+          containerBoxes
         );
         if (detour && detour.length >= 2) {
           points = detour;
@@ -6478,7 +7538,7 @@ export function routeConnections(
         }
       }
 
-      pathD = buildRoundedPolylinePath(points, cornerRadius);
+      pathD = buildRoundedPolylinePath(pullbackPolyline(points), cornerRadius);
     }
 
     const tone = conn.tone || "neutral";
@@ -6521,9 +7581,19 @@ export function routeConnections(
       let anchorPt                  ;
 
       if (isSelfLoop) {
-        anchorPt = findLongestClearSegmentMidpoint(points, paddedObstacles);
+        anchorPt = findLongestClearSegmentMidpoint(
+          points,
+          paddedObstacles,
+          labelW,
+          labelH
+        );
       } else if (usedObstacleDetour && !hasExplicitPos) {
-        anchorPt = findLongestClearSegmentMidpoint(points, paddedObstacles);
+        anchorPt = findLongestClearSegmentMidpoint(
+          points,
+          rawObstacles,
+          labelW,
+          labelH
+        );
       } else if (bezierControls) {
         const [c1, c2] = bezierControls;
         if (
@@ -6603,10 +7673,47 @@ export function routeConnections(
                 (points[1][1] + points[2][1]) / 2,
               ];
       } else if (points.length === 4 && !hasExplicitPos) {
-        anchorPt = [
-          (points[1][0] + points[2][0]) / 2,
-          (points[1][1] + points[2][1]) / 2,
-        ];
+        const isHorizZBend =
+          (fromSide === "left" || fromSide === "right") &&
+          (toSide === "left" || toSide === "right");
+        if (isHorizZBend && corridorBundleSize >= 2) {
+          // Stagger labels onto unobstructed horizontal arms for outer edges of a parallel Z-bend bundle
+          const seg0Len = Math.hypot(
+            points[1][0] - points[0][0],
+            points[1][1] - points[0][1]
+          );
+          const seg2Len = Math.hypot(
+            points[3][0] - points[2][0],
+            points[3][1] - points[2][1]
+          );
+          const minArmLen = Math.min(labelW * 0.65, 68);
+          if (corridorBundleIndex === 0 && seg2Len >= minArmLen) {
+            // Leftmost rail -> longest target-side horizontal arm
+            anchorPt = [
+              (points[2][0] + points[3][0]) / 2,
+              (points[2][1] + points[3][1]) / 2,
+            ];
+          } else if (
+            corridorBundleIndex === corridorBundleSize - 1 &&
+            seg0Len >= minArmLen
+          ) {
+            // Rightmost rail -> longest source-side horizontal arm
+            anchorPt = [
+              (points[0][0] + points[1][0]) / 2,
+              (points[0][1] + points[1][1]) / 2,
+            ];
+          } else {
+            anchorPt = [
+              (points[1][0] + points[2][0]) / 2,
+              (points[1][1] + points[2][1]) / 2,
+            ];
+          }
+        } else {
+          anchorPt = [
+            (points[1][0] + points[2][0]) / 2,
+            (points[1][1] + points[2][1]) / 2,
+          ];
+        }
       } else {
         anchorPt = evalPointAlongPolyline(points, posRatio);
       }
@@ -6628,8 +7735,16 @@ export function routeConnections(
         lx += conn.labelOffset[0];
         ly += conn.labelOffset[1];
       } else if (!isSelfLoop && !usedObstacleDetour) {
+        // Only clamp along the axis parallel to the segment carrying the label so the label
+        // stays strictly centered ON its own line (never detached vertically off a horizontal rail).
+        const is4PtHorizMiddleRail =
+          points.length === 4 && Math.abs(points[1][1] - points[2][1]) <= 0.5;
+        const is4PtVertMiddleRail =
+          points.length === 4 && Math.abs(points[1][0] - points[2][0]) <= 0.5;
+
         if (
           corridor.horiz &&
+          !is4PtVertMiddleRail &&
           (fromSide === "left" || fromSide === "right") &&
           (toSide === "left" || toSide === "right")
         ) {
@@ -6643,6 +7758,7 @@ export function routeConnections(
         }
         if (
           corridor.vert &&
+          !is4PtHorizMiddleRail &&
           (fromSide === "top" || fromSide === "bottom") &&
           (toSide === "top" || toSide === "bottom")
         ) {
@@ -6663,14 +7779,139 @@ export function routeConnections(
         height: labelH,
       };
 
-      // Avoid overlapping previously placed edge labels
-      for (const prev of placedLabelBoxes) {
-        if (boxesOverlap(candidateBox, prev, 4)) {
-          if (candidateBox.y >= prev.y) {
-            candidateBox.y = prev.y + prev.height + 6;
+      const labelObstacles                = [
+        ...rawObstacles,
+        ...containerHeaderObstacles,
+      ];
+
+      const countBoxHits = (
+        box             ,
+        list               ,
+        pad = 2
+      )         => {
+        let hits = 0;
+        for (const obs of list) {
+          if (boxesOverlap(box, obs, pad)) hits++;
+        }
+        return hits;
+      };
+
+      const countOtherEdgeSegHits = (box             )         => {
+        let hits = 0;
+        for (const seg of routedSegments) {
+          if (seg.axis === "h") {
+            if (
+              seg.coord >= box.y - 2 &&
+              seg.coord <= box.y + box.height + 2 &&
+              seg.max >= box.x - 2 &&
+              seg.min <= box.x + box.width + 2
+            ) {
+              hits++;
+            }
           } else {
-            candidateBox.y = prev.y - candidateBox.height - 6;
+            if (
+              seg.coord >= box.x - 2 &&
+              seg.coord <= box.x + box.width + 2 &&
+              seg.max >= box.y - 2 &&
+              seg.min <= box.y + box.height + 2
+            ) {
+              hits++;
+            }
           }
+        }
+        return hits;
+      };
+
+      // Strict On-Polyline Label Placement:
+      // If the initial label position hits any node, container header, previously placed label,
+      // or another edge's path segment/corner, slide strictly along THIS edge's polyline so the label
+      // NEVER floats off its own line and avoids visually merging over a neighboring edge.
+      const prevRoutedCount = routedSegments.length;
+      const isStaggeredBundle = corridorBundleSize >= 2 && points.length === 4;
+      const otherSegHitsInit = isStaggeredBundle
+        ? 0
+        : countOtherEdgeSegHits(candidateBox);
+      if (
+        !conn.labelOffset &&
+        (countBoxHits(candidateBox, labelObstacles, 1) > 0 ||
+          countBoxHits(candidateBox, placedLabelBoxes, 4) > 0 ||
+          otherSegHitsInit > 0)
+      ) {
+        const prefX = candidateBox.x + labelW / 2;
+        const prefY = candidateBox.y + labelH / 2;
+        const sampleRatios = [
+          0.5, 0.42, 0.58, 0.34, 0.66, 0.26, 0.74, 0.18, 0.82, 0.12, 0.88,
+        ];
+        const endA = points[0];
+        const endB = points[points.length - 1];
+
+        let bestBox                                  = null;
+        let bestScore = -Infinity;
+
+        for (let i = 0; i < points.length - 1; i++) {
+          const a = points[i];
+          const b = points[i + 1];
+          const segLen = Math.hypot(b[0] - a[0], b[1] - a[1]);
+          if (segLen < 12) continue;
+          const isHorizSeg = Math.abs(a[1] - b[1]) <= 0.5;
+          const isVertSeg = Math.abs(a[0] - b[0]) <= 0.5;
+          const isSteepSeg =
+            isVertSeg || Math.abs(b[1] - a[1]) >= Math.abs(b[0] - a[0]) * 0.7;
+          const isInteriorSeg =
+            points.length >= 4 && i > 0 && i < points.length - 2;
+
+          for (const r of sampleRatios) {
+            const pt                   = [
+              a[0] + (b[0] - a[0]) * r,
+              a[1] + (b[1] - a[1]) * r,
+            ];
+            // Always keep the edge segment passing inside the label pill (center first, or slight lateral shift on steep/vertical segments)
+            const xOffsets =
+              isSteepSeg && labelW > 48
+                ? [0, -Math.min(labelW * 0.32, 36), Math.min(labelW * 0.32, 36)]
+                : [0];
+
+            for (const xOff of xOffsets) {
+              const testBox              = {
+                x: pt[0] - labelW / 2 + xOff,
+                y: pt[1] - labelH / 2,
+                width: labelW,
+                height: labelH,
+              };
+              const obsHits = countBoxHits(testBox, labelObstacles, 1);
+              const lblHits = countBoxHits(testBox, placedLabelBoxes, 4);
+              const otherHits =
+                prevRoutedCount > 0 ? countOtherEdgeSegHits(testBox) : 0;
+              const nearEnd =
+                Math.hypot(pt[0] - endA[0], pt[1] - endA[1]) < 18 ||
+                Math.hypot(pt[0] - endB[0], pt[1] - endB[1]) < 18;
+              const distToPref = Math.hypot(
+                testBox.x + labelW / 2 - prefX,
+                testBox.y + labelH / 2 - prefY
+              );
+
+              const score =
+                Math.min(segLen, 160) * 0.45 +
+                (isInteriorSeg ? 25 : 0) +
+                (isHorizSeg && segLen >= labelW * 0.65 ? 20 : 0) -
+                (xOff !== 0 ? 18 : 0) -
+                obsHits * 3000 -
+                lblHits * 2500 -
+                otherHits * 900 -
+                (nearEnd ? 350 : 0) -
+                distToPref * 0.08;
+
+              if (score > bestScore) {
+                bestScore = score;
+                bestBox = { x: testBox.x, y: testBox.y };
+              }
+            }
+          }
+        }
+
+        if (bestBox) {
+          candidateBox.x = bestBox.x;
+          candidateBox.y = bestBox.y;
         }
       }
 
@@ -6715,6 +7956,9 @@ export function routeConnections(
         durationSec,
       },
     });
+
+    // Reserve orthogonal tracks of this routed edge AFTER label placement so labels only avoid OTHER edges
+    routedSegments.push(...extractOrthogonalSegments(points));
   }
 
   return edges;
@@ -7009,7 +8253,7 @@ function renderDecoration(
 
     case "code-line":
     case "table-cell":
-      return `<rect class="ai-ill-subanchor" data-anchor-id="${escapeXml(dec.anchorId || "")}" x="${dec.x}" y="${dec.y}" width="${dec.width || 0}" height="${dec.height || 0}" rx="${dec.rx || 3}" fill="${dec.fill || "transparent"}" />`;
+      return `<rect class="ai-ill-subanchor" data-anchor-id="${escapeXml(dec.anchorId || "")}" x="${dec.x}" y="${dec.y}" width="${dec.width || 0}" height="${dec.height || 0}" rx="${dec.rx ?? (dec.kind === "code-line" ? 3 : 0)}" fill="${dec.fill || "transparent"}" />`;
 
     case "circle":
       return `<circle cx="${dec.x}" cy="${dec.y}" r="${dec.r || 4}" fill="${dec.fill || "none"}" stroke="${dec.stroke || "none"}" />`;
@@ -7018,7 +8262,10 @@ function renderDecoration(
       const dashAttr = dec.strokeDasharray
         ? ` stroke-dasharray="${dec.strokeDasharray}"`
         : "";
-      if (rough && !dec.strokeDasharray) {
+      const markerEndAttr = dec.markerEnd
+        ? ` marker-end="url(#ill-marker-${dec.markerEnd})"`
+        : "";
+      if (rough && !dec.strokeDasharray && !dec.markerEnd) {
         const d = generateRoughLinePath(
           dec.x,
           dec.y,
@@ -7029,7 +8276,18 @@ function renderDecoration(
         );
         return `<path d="${d}" fill="none" stroke="${dec.stroke || "currentColor"}" stroke-width="${dec.strokeWidth || 1}" />`;
       }
-      return `<line x1="${dec.x}" y1="${dec.y}" x2="${dec.x2 ?? dec.x}" y2="${dec.y2 ?? dec.y}" stroke="${dec.stroke || "currentColor"}" stroke-width="${dec.strokeWidth || 1}"${dashAttr} />`;
+      const linecapAttr = dec.markerEnd ? ` stroke-linecap="round"` : "";
+      return `<line x1="${dec.x}" y1="${dec.y}" x2="${dec.x2 ?? dec.x}" y2="${dec.y2 ?? dec.y}" stroke="${dec.stroke || "currentColor"}" stroke-width="${dec.strokeWidth || 1}"${linecapAttr}${dashAttr}${markerEndAttr} />`;
+    }
+
+    case "path": {
+      const dashAttr = dec.strokeDasharray
+        ? ` stroke-dasharray="${dec.strokeDasharray}"`
+        : "";
+      const markerEndAttr = dec.markerEnd
+        ? ` marker-end="url(#ill-marker-${dec.markerEnd})"`
+        : "";
+      return `<path d="${dec.d || ""}" fill="${dec.fill || "none"}" stroke="${dec.stroke || "currentColor"}" stroke-width="${dec.strokeWidth || 1.5}" stroke-linecap="round" stroke-linejoin="round"${dashAttr}${markerEndAttr} />`;
     }
 
     case "icon":
@@ -7192,20 +8450,69 @@ function renderCalloutConnector(
   if (!node.calloutTail) return "";
   const targetBox = anchorRegistry[node.calloutTail.targetId];
   if (!targetBox) return "";
+  const ownerBox =
+    targetBox.ownerNodeId && anchorRegistry[targetBox.ownerNodeId]
+      ? anchorRegistry[targetBox.ownerNodeId]
+      : targetBox;
+  const side = node.calloutTail.side;
 
-  const startX = node.x + node.width / 2;
+  // When a top/bottom callout targets an interior sub-anchor (e.g. mdx_source.line_2),
+  // route around the left edge of ownerBox so the leader line never strikes through header/code text.
+  if (
+    (side === "top" && targetBox.y > ownerBox.y + 4) ||
+    (side === "bottom" &&
+      targetBox.y + targetBox.height < ownerBox.y + ownerBox.height - 4)
+  ) {
+    const startY = side === "top" ? node.y + node.height : node.y;
+    const r = node.style.radius || 8;
+    const minFlatBottomX = node.x + r + 4;
+    const maxFlatBottomX = node.x + node.width - r - 4;
+    const gutterX = Math.max(8, ownerBox.x - 12);
+    const endX = ownerBox.x;
+    const endY = targetBox.y + targetBox.height / 2;
+    const cornerR = 4;
+    const vDir = endY >= startY ? 1 : -1;
+
+    let d        ;
+    if (gutterX >= minFlatBottomX && gutterX <= maxFlatBottomX) {
+      // Gutter sits directly beneath/above the callout's flat horizontal border: 1-bend rounded L-path
+      d = `M ${gutterX.toFixed(1)} ${startY.toFixed(1)} L ${gutterX.toFixed(1)} ${(endY - vDir * cornerR).toFixed(1)} Q ${gutterX.toFixed(1)} ${endY.toFixed(1)} ${(gutterX + cornerR).toFixed(1)} ${endY.toFixed(1)} L ${endX.toFixed(1)} ${endY.toFixed(1)}`;
+    } else {
+      // Fallback when callout is positioned to the right of gutterX: exit flush from callout's left vertical border
+      const attachY = node.y + node.height / 2;
+      const effGutterX = Math.max(8, Math.min(node.x, ownerBox.x) - 12);
+      const vDir2 = endY >= attachY ? 1 : -1;
+      d = `M ${node.x.toFixed(1)} ${attachY.toFixed(1)} L ${(effGutterX + cornerR).toFixed(1)} ${attachY.toFixed(1)} Q ${effGutterX.toFixed(1)} ${attachY.toFixed(1)} ${effGutterX.toFixed(1)} ${(attachY + vDir2 * cornerR).toFixed(1)} L ${effGutterX.toFixed(1)} ${(endY - vDir2 * cornerR).toFixed(1)} Q ${effGutterX.toFixed(1)} ${endY.toFixed(1)} ${(effGutterX + cornerR).toFixed(1)} ${endY.toFixed(1)} L ${endX.toFixed(1)} ${endY.toFixed(1)}`;
+    }
+    return `<g class="ai-ill-callout-link" data-node-id="${escapeXml(node.id)}">
+    <path d="${d}" fill="none" stroke="${node.style.stroke}" stroke-width="1.5" stroke-dasharray="3 3" stroke-linejoin="round" />
+    <circle cx="${endX.toFixed(1)}" cy="${endY.toFixed(1)}" r="3.5" fill="${node.style.stroke}" />
+  </g>`;
+  }
+
+  const startX =
+    side === "left"
+      ? node.x + node.width
+      : side === "right"
+      ? node.x
+      : node.x + node.width / 2;
   const startY =
-    node.calloutTail.side === "top"
+    side === "top"
       ? node.y + node.height
-      : node.calloutTail.side === "bottom"
+      : side === "bottom"
       ? node.y
       : node.y + node.height / 2;
 
-  const endX = targetBox.x + targetBox.width / 2;
+  const endX =
+    side === "left"
+      ? targetBox.x
+      : side === "right"
+      ? targetBox.x + targetBox.width
+      : targetBox.x + targetBox.width / 2;
   const endY =
-    node.calloutTail.side === "top"
+    side === "top"
       ? targetBox.y
-      : node.calloutTail.side === "bottom"
+      : side === "bottom"
       ? targetBox.y + targetBox.height
       : targetBox.y + targetBox.height / 2;
 
@@ -7220,7 +8527,6 @@ function renderSceneNodeTree(
   roughness        ,
   anchorRegistry                             
 )         {
-  const shapeSvg = renderNodeShape(node, roughness);
   const decsSvg = node.decorations
     .map((dec, idx) =>
       renderDecoration(dec, node.style.rough, node.id, idx, roughness)
@@ -7234,10 +8540,64 @@ function renderSceneNodeTree(
 
   const calloutLink = renderCalloutConnector(node, anchorRegistry);
 
+  const { width: w, height: h, style, shape } = node;
+  if (
+    shape === "rect" &&
+    style.variant !== "ghost" &&
+    node.decorations.length > 0 &&
+    style.radius > 0
+  ) {
+    const clipId = `ill-clip-${escapeXml(node.id)}`;
+    const r = style.rough ? Math.min(style.radius, 6) : style.radius;
+    const dashAttr = style.strokeDasharray
+      ? ` stroke-dasharray="${style.strokeDasharray}"`
+      : "";
+    const filterAttr =
+      style.elevation === "md"
+        ? ` filter="url(#ill-shadow-md)"`
+        : style.elevation === "sm"
+        ? ` filter="url(#ill-shadow-sm)"`
+        : "";
+
+    const bgSvg = style.rough
+      ? `<rect x="1" y="1" width="${w - 2}" height="${h - 2}" rx="${r}" fill="${style.fill}" stroke="none"${filterAttr} />`
+      : `<rect x="0" y="0" width="${w}" height="${h}" rx="${r}" fill="${style.fill}" stroke="none"${filterAttr} />`;
+
+    const borderSvg = style.rough
+      ? `<path d="${generateRoughRectStrokePath(0, 0, w, h, node.id, roughness)}" fill="none" stroke="${style.stroke}" stroke-width="${style.strokeWidth}"${dashAttr} />`
+      : `<rect x="0" y="0" width="${w}" height="${h}" rx="${r}" fill="none" stroke="${style.stroke}" stroke-width="${style.strokeWidth}"${dashAttr} />`;
+
+    return `${calloutLink}<g class="ai-ill-node" data-node-id="${escapeXml(node.id)}" data-node-type="${node.type}" transform="translate(${node.x.toFixed(1)}, ${node.y.toFixed(1)})" opacity="${style.opacity}">
+    <clipPath id="${clipId}"><rect x="0" y="0" width="${w}" height="${h}" rx="${r}" /></clipPath>
+    ${bgSvg}
+    <g clip-path="url(#${clipId})">${decsSvg}</g>
+    ${borderSvg}
+  </g>${childrenSvg}`;
+  }
+
+  const shapeSvg = renderNodeShape(node, roughness);
+
   return `${calloutLink}<g class="ai-ill-node" data-node-id="${escapeXml(node.id)}" data-node-type="${node.type}" transform="translate(${node.x.toFixed(1)}, ${node.y.toFixed(1)})" opacity="${node.style.opacity}">
     ${shapeSvg}
     ${decsSvg}
   </g>${childrenSvg}`;
+}
+
+function buildTrimmedHaloPathD(edge           )                {
+  if (edge.points.length < 3 || !edge.pathD.startsWith("M ")) return null;
+  const p0 = edge.points[0];
+  const p1 = edge.points[1];
+  const dx = p1[0] - p0[0];
+  const dy = p1[1] - p0[1];
+  const len = Math.hypot(dx, dy);
+  if (len <= 10) return null;
+  const trim = Math.min(6, len * 0.35);
+  const nx = p0[0] + (dx / len) * trim;
+  const ny = p0[1] + (dy / len) * trim;
+  return edge.pathD.replace(
+    /^M\s+[-0-9.]+\s+[-0-9.]+/,
+    `M ${nx.toFixed(1)} ${ny.toFixed(1)}`
+  );
 }
 
 function renderEdge(edge           , scene            )         {
@@ -7257,8 +8617,23 @@ function renderEdge(edge           , scene            )         {
 
   let roughCompanionSvg = "";
   if (scene.preset === "sketch" && edge.points.length >= 2) {
+    const companionPts = edge.points.map(
+      (pt) => [pt[0], pt[1]]                    
+    );
+    if (edge.endMarker === "arrow" && companionPts.length >= 2) {
+      const last = companionPts[companionPts.length - 1];
+      const prev = companionPts[companionPts.length - 2];
+      const dx = last[0] - prev[0];
+      const dy = last[1] - prev[1];
+      const len = Math.hypot(dx, dy);
+      if (len > 4) {
+        const pull = Math.min(7.7, len * 0.45);
+        last[0] -= (dx / len) * pull;
+        last[1] -= (dy / len) * pull;
+      }
+    }
     const companionD = generateRoughEdgeCompanionPath(
-      edge.points,
+      companionPts,
       `${edge.id}_rough`,
       scene.theme.geometry.roughness
     );
@@ -7284,27 +8659,38 @@ function renderEdge(edge           , scene            )         {
     }
   }
 
-  let labelSvg = "";
-  if (edge.label && edge.labelBox) {
-    const lb = edge.labelBox;
-    const labelStroke =
-      edge.tone === "neutral"
-        ? scene.theme.colors.border
-        : scene.theme.colors.tones[edge.tone].softBorder;
-    const labelRx = scene.preset === "blueprint" ? 3 : 11;
-    labelSvg = `<g class="ai-ill-edge-label">
-      <rect x="${lb.x.toFixed(1)}" y="${lb.y.toFixed(1)}" width="${lb.width.toFixed(1)}" height="${lb.height.toFixed(1)}" rx="${labelRx}" fill="${scene.theme.colors.surfaceElevated}" stroke="${labelStroke}" stroke-width="1" filter="url(#ill-shadow-sm)" />
-      <text x="${(lb.x + lb.width / 2).toFixed(1)}" y="${(lb.y + lb.height / 2 + 3.8).toFixed(1)}" fill="${edge.tone === "neutral" ? scene.theme.colors.textMuted : edge.stroke}" font-family="${escapeXml(scene.theme.typography.fontSans)}" font-size="11px" font-weight="600" text-anchor="middle">${escapeXml(edge.label)}</text>
-    </g>`;
-  }
+  // Subtle background-colored bridge halo underneath multi-segment paths so crossings remain legible
+  const haloD =
+    scene.background !== "transparent" ? buildTrimmedHaloPathD(edge) : null;
+  const haloColor =
+    scene.background === "surface"
+      ? scene.theme.colors.surface
+      : scene.theme.colors.bg;
+  const bridgeHaloSvg = haloD
+    ? `<path class="ai-ill-edge-halo" d="${haloD}" fill="none" stroke="${haloColor}" stroke-width="${(edge.strokeWidth + 3.0).toFixed(2)}" stroke-linecap="butt" stroke-linejoin="round" opacity="0.88" />`
+    : "";
 
   return `<g class="ai-ill-edge" data-edge-id="${escapeXml(edge.id)}" data-from="${escapeXml(edge.from)}" data-to="${escapeXml(edge.to)}">
     <!-- Invisible wider hit target for easy hover -->
     <path d="${edge.pathD}" fill="none" stroke="transparent" stroke-width="14" />
+    ${bridgeHaloSvg}
     ${roughCompanionSvg}
     <path class="ai-ill-edge-path${flowClass}" d="${edge.pathD}" fill="none" stroke="${edge.stroke}" stroke-width="${edge.strokeWidth}" stroke-linecap="round" stroke-linejoin="round"${dashAttr}${markerStart}${markerEnd} />
     ${pulseParticles}
-    ${labelSvg}
+  </g>`;
+}
+
+function renderEdgeLabel(edge           , scene            )         {
+  if (!edge.label || !edge.labelBox) return "";
+  const lb = edge.labelBox;
+  const labelStroke =
+    edge.tone === "neutral"
+      ? scene.theme.colors.border
+      : scene.theme.colors.tones[edge.tone].softBorder;
+  const labelRx = scene.preset === "blueprint" ? 3 : 11;
+  return `<g class="ai-ill-edge-label" data-edge-id="${escapeXml(edge.id)}" data-from="${escapeXml(edge.from)}" data-to="${escapeXml(edge.to)}">
+    <rect x="${lb.x.toFixed(1)}" y="${lb.y.toFixed(1)}" width="${lb.width.toFixed(1)}" height="${lb.height.toFixed(1)}" rx="${labelRx}" fill="${scene.theme.colors.surfaceElevated}" stroke="${labelStroke}" stroke-width="1" filter="url(#ill-shadow-sm)" />
+    <text x="${(lb.x + lb.width / 2).toFixed(1)}" y="${(lb.y + lb.height / 2 + 3.8).toFixed(1)}" fill="${edge.tone === "neutral" ? scene.theme.colors.textMuted : edge.stroke}" font-family="${escapeXml(scene.theme.typography.fontSans)}" font-size="11px" font-weight="600" text-anchor="middle">${escapeXml(edge.label)}</text>
   </g>`;
 }
 
@@ -7319,8 +8705,9 @@ export function renderSceneGraphToSvgString(scene            )         {
           ? theme.colors.textMuted
           : theme.colors.tones[tone].main;
       return `
-        <marker id="ill-marker-arrow-${tone}" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
-          <path d="M 1 1.8 L 9 5 L 1 8.2 z" fill="${col}" />
+        <marker id="ill-marker-arrow-${tone}" viewBox="0 0 10 10" refX="2.5" refY="5" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" orient="auto-start-reverse">
+          <path d="M 0 5 L 3.2 5" stroke="${col}" stroke-width="1.75" stroke-linecap="round" />
+          <path d="M 1.4 1.6 L 9.5 5 L 1.4 8.4 L 2.7 5 z" fill="${col}" />
         </marker>
         <marker id="ill-marker-dot-${tone}" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="5" markerHeight="5">
           <circle cx="5" cy="5" r="3.5" fill="${col}" />
@@ -7365,6 +8752,10 @@ export function renderSceneGraphToSvgString(scene            )         {
     .join("\n");
 
   const edgesSvg = scene.edges.map((e) => renderEdge(e, scene)).join("\n");
+  const edgeLabelsSvg = scene.edges
+    .map((e) => renderEdgeLabel(e, scene))
+    .filter(Boolean)
+    .join("\n");
 
   return `<svg class="ai-ill-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="100%" style="max-width: ${width}px; height: auto; display: block; margin: 0 auto;" role="img" aria-label="${escapeXml(scene.title || "Technical Illustration")}">
   ${scene.title ? `<title>${escapeXml(scene.title)}</title>` : ""}
@@ -7392,10 +8783,10 @@ export function renderSceneGraphToSvgString(scene            )         {
     .ai-ill-edge-flow {
       animation: ill-dash-march 0.9s linear infinite;
     }
-    .ai-ill-node, .ai-ill-edge, .ai-ill-subanchor, .ai-ill-callout-link {
+    .ai-ill-node, .ai-ill-edge, .ai-ill-edge-label, .ai-ill-subanchor, .ai-ill-callout-link {
       transition: opacity 0.18s ease, filter 0.18s ease, stroke-width 0.18s ease;
     }
-    .ai-ill-node {
+    .ai-ill-node, .ai-ill-edge-label {
       cursor: pointer;
     }
     .ai-ill-subanchor {
@@ -7403,12 +8794,16 @@ export function renderSceneGraphToSvgString(scene            )         {
     }
     .ai-ill-svg.has-focus .ai-ill-node.is-dimmed,
     .ai-ill-svg.has-focus .ai-ill-edge.is-dimmed,
+    .ai-ill-svg.has-focus .ai-ill-edge-label.is-dimmed,
     .ai-ill-svg.has-focus .ai-ill-callout-link.is-dimmed {
       opacity: 0.2;
       filter: grayscale(35%);
     }
     .ai-ill-svg.has-focus .ai-ill-edge.is-active .ai-ill-edge-path {
       stroke-width: 2.8px;
+    }
+    .ai-ill-svg.has-focus .ai-ill-edge-label.is-active rect {
+      stroke-width: 1.6px;
     }
     .ai-ill-svg.has-focus .ai-ill-subanchor.is-active {
       stroke: ${theme.colors.tones.primary.main};
@@ -7418,6 +8813,7 @@ export function renderSceneGraphToSvgString(scene            )         {
   <g class="ai-ill-bg-layer">${bgRectSvg}</g>
   <g class="ai-ill-nodes-layer">${nodesSvg}</g>
   <g class="ai-ill-edges-layer">${edgesSvg}</g>
+  <g class="ai-ill-edge-labels-layer">${edgeLabelsSvg}</g>
 </svg>`;
 }
 
@@ -7754,6 +9150,9 @@ export class AiIllustrationElement extends BaseHTMLElement {
     const applyFocus = (focusKey               ) => {
       const allNodes = svgEl.querySelectorAll             (".ai-ill-node");
       const allEdges = svgEl.querySelectorAll             (".ai-ill-edge");
+      const allEdgeLabels = svgEl.querySelectorAll             (
+        ".ai-ill-edge-label"
+      );
       const allAnchors =
         svgEl.querySelectorAll            (".ai-ill-subanchor");
       const allCalloutLinks = svgEl.querySelectorAll             (
@@ -7766,6 +9165,9 @@ export class AiIllustrationElement extends BaseHTMLElement {
           el.classList.remove("is-active", "is-dimmed")
         );
         allEdges.forEach((el) =>
+          el.classList.remove("is-active", "is-dimmed")
+        );
+        allEdgeLabels.forEach((el) =>
           el.classList.remove("is-active", "is-dimmed")
         );
         allAnchors.forEach((el) => el.classList.remove("is-active"));
@@ -7790,6 +9192,17 @@ export class AiIllustrationElement extends BaseHTMLElement {
       });
 
       allEdges.forEach((el) => {
+        const eid = el.getAttribute("data-edge-id") || "";
+        if (activeSet.edgeIds.has(eid)) {
+          el.classList.add("is-active");
+          el.classList.remove("is-dimmed");
+        } else {
+          el.classList.add("is-dimmed");
+          el.classList.remove("is-active");
+        }
+      });
+
+      allEdgeLabels.forEach((el) => {
         const eid = el.getAttribute("data-edge-id") || "";
         if (activeSet.edgeIds.has(eid)) {
           el.classList.add("is-active");

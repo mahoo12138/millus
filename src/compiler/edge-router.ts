@@ -56,6 +56,8 @@ interface PreparedEdgeItem {
   fromMultiplexed: boolean;
   toMultiplexed: boolean;
   corridorOffset: number;
+  corridorBundleIndex: number;
+  corridorBundleSize: number;
 }
 
 function parseEndpoint(raw: string): ParsedEndpoint {
@@ -319,14 +321,25 @@ function alignFacingPorts(
     (fromSide === "bottom" && toSide === "top") ||
     (fromSide === "top" && toSide === "bottom");
 
+  const isShapeSideCurved = (
+    shape: BoundingBox["shape"],
+    side: PortSide
+  ): boolean => {
+    if (!shape || shape === "rect") return false;
+    // Queue has flat horizontal top/bottom edges; cylinder has flat vertical left/right walls
+    if (shape === "queue" && (side === "top" || side === "bottom")) return false;
+    if (shape === "cylinder" && (side === "left" || side === "right")) return false;
+    return true;
+  };
+
   const fixedFrom =
-    fromFixedRatio || Boolean(fromBox.shape && fromBox.shape !== "rect");
+    fromFixedRatio || isShapeSideCurved(fromBox.shape, fromSide);
   const fixedTo =
-    toFixedRatio || Boolean(toBox.shape && toBox.shape !== "rect");
+    toFixedRatio || isShapeSideCurved(toBox.shape, toSide);
 
   if (isOppositeHoriz) {
     const dy = Math.abs(p1[1] - p2[1]);
-    if (dy > 0.5 && dy <= 32) {
+    if (dy > 0.5 && dy <= 40) {
       const m1 = isFromSubAnchor
         ? Math.min(4, fromBox.height * 0.2)
         : Math.min(16, fromBox.height * 0.22);
@@ -354,13 +367,13 @@ function alignFacingPorts(
     }
   } else if (isOppositeVert) {
     const dx = Math.abs(p1[0] - p2[0]);
-    if (dx > 0.5 && dx <= 32) {
+    if (dx > 0.5 && dx <= 84) {
       const m1 = isFromSubAnchor
-        ? Math.min(6, fromBox.width * 0.2)
-        : Math.min(18, fromBox.width * 0.2);
+        ? Math.min(10, fromBox.width * 0.2)
+        : Math.min(20, fromBox.width * 0.2);
       const m2 = isToSubAnchor
-        ? Math.min(6, toBox.width * 0.2)
-        : Math.min(18, toBox.width * 0.2);
+        ? Math.min(10, toBox.width * 0.2)
+        : Math.min(20, toBox.width * 0.2);
       const min1 = fixedFrom ? p1[0] : fromBox.x + m1;
       const max1 = fixedFrom ? p1[0] : fromBox.x + fromBox.width - m1;
       const min2 = fixedTo ? p2[0] : toBox.x + m2;
@@ -738,21 +751,33 @@ function buildEdgeObstacles(
   toOwnerId: string,
   ownerFromBox: BoundingBox,
   ownerToBox: BoundingBox,
-  registry: Record<string, BoundingBox>
+  registry: Record<string, BoundingBox>,
+  fromSide?: PortSide,
+  toSide?: PortSide
 ): { paddedObstacles: BoundingBox[]; rawObstacles: BoundingBox[] } {
   const paddedObstacles: BoundingBox[] = [];
   const rawObstacles: BoundingBox[] = [];
 
-  // Shrink endpoint owner boxes by 3px so ports on their perimeter don't collide,
-  // while any segment cutting across their interior is rejected.
+  // Only inset endpoint owner boxes on the side where their port attaches,
+  // while keeping perpendicular edges flush/padded so detours never graze along an endpoint's top/bottom/side borders.
   const shrink = 3;
+  const makeEndpointObstacle = (
+    box: BoundingBox,
+    portSide?: PortSide
+  ): BoundingBox => {
+    const leftPad = portSide === "left" ? -shrink : 4;
+    const rightPad = portSide === "right" ? -shrink : 4;
+    const topPad = portSide === "top" ? -shrink : 4;
+    const botPad = portSide === "bottom" ? -shrink : 4;
+    return {
+      x: box.x - leftPad,
+      y: box.y - topPad,
+      width: Math.max(2, box.width + leftPad + rightPad),
+      height: Math.max(2, box.height + topPad + botPad),
+    };
+  };
   if (ownerFromBox.width > shrink * 2 && ownerFromBox.height > shrink * 2) {
-    paddedObstacles.push({
-      x: ownerFromBox.x + shrink,
-      y: ownerFromBox.y + shrink,
-      width: ownerFromBox.width - shrink * 2,
-      height: ownerFromBox.height - shrink * 2,
-    });
+    paddedObstacles.push(makeEndpointObstacle(ownerFromBox, fromSide));
     rawObstacles.push(ownerFromBox);
   }
   if (
@@ -760,12 +785,7 @@ function buildEdgeObstacles(
     ownerToBox.width > shrink * 2 &&
     ownerToBox.height > shrink * 2
   ) {
-    paddedObstacles.push({
-      x: ownerToBox.x + shrink,
-      y: ownerToBox.y + shrink,
-      width: ownerToBox.width - shrink * 2,
-      height: ownerToBox.height - shrink * 2,
-    });
+    paddedObstacles.push(makeEndpointObstacle(ownerToBox, toSide));
     rawObstacles.push(ownerToBox);
   }
 
@@ -775,13 +795,40 @@ function buildEdgeObstacles(
     if (box.ownerNodeId && box.ownerNodeId !== key) continue;
     if (key === fromOwnerId || key === toOwnerId) continue;
 
-    // Skip container groups that enclose either endpoint or child nodes inside either endpoint
+    // Skip container groups that enclose either endpoint or child nodes inside either endpoint,
+    // but protect the enclosing container's top header bar (36px) so internal edges never route across group titles.
     if (
       boxContainsBox(box, ownerFromBox) ||
       boxContainsBox(box, ownerToBox) ||
       boxContainsBox(ownerFromBox, box) ||
       boxContainsBox(ownerToBox, box)
     ) {
+      const containsFrom = boxContainsBox(box, ownerFromBox);
+      const containsTo = boxContainsBox(box, ownerToBox);
+      const isHorizFrom =
+        containsFrom && (fromSide === "left" || fromSide === "right");
+      const isHorizTo =
+        containsTo && (toSide === "left" || toSide === "right");
+      if (
+        (isHorizFrom || isHorizTo) &&
+        (!containsFrom || ownerFromBox.y >= box.y + 36) &&
+        (!containsTo || ownerToBox.y >= box.y + 36) &&
+        box.height > 64
+      ) {
+        const headerObs: BoundingBox = {
+          x: box.x + 4,
+          y: box.y,
+          width: Math.max(20, box.width - 8),
+          height: 44,
+        };
+        rawObstacles.push(headerObs);
+        paddedObstacles.push({
+          x: headerObs.x - pad,
+          y: headerObs.y - pad,
+          width: headerObs.width + pad * 2,
+          height: headerObs.height + pad * 2,
+        });
+      }
       continue;
     }
 
@@ -883,9 +930,151 @@ function pointInsideAnyObstacle(
   return false;
 }
 
+interface RoutedSegment {
+  axis: "h" | "v";
+  coord: number;
+  min: number;
+  max: number;
+}
+
+function collectContainerBoxes(
+  registry: Record<string, BoundingBox>
+): { containerBoxes: BoundingBox[]; containerHeaderObstacles: BoundingBox[] } {
+  const primaries: Array<{ key: string; box: BoundingBox }> = [];
+  for (const [key, box] of Object.entries(registry)) {
+    if (box.ownerNodeId && box.ownerNodeId !== key) continue;
+    primaries.push({ key, box });
+  }
+  const containerBoxes: BoundingBox[] = [];
+  const containerHeaderObstacles: BoundingBox[] = [];
+  for (const p of primaries) {
+    const hasChild = primaries.some(
+      (other) => other.key !== p.key && boxContainsBox(p.box, other.box)
+    );
+    if (hasChild) {
+      containerBoxes.push(p.box);
+      if (p.box.height > 64) {
+        containerHeaderObstacles.push({
+          x: p.box.x + 6,
+          y: p.box.y + 4,
+          width: Math.max(20, p.box.width - 12),
+          height: 36,
+        });
+      }
+    }
+  }
+  return { containerBoxes, containerHeaderObstacles };
+}
+
+function extractOrthogonalSegments(pts: [number, number][]): RoutedSegment[] {
+  const segs: RoutedSegment[] = [];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i];
+    const b = pts[i + 1];
+    if (Math.abs(a[1] - b[1]) <= 0.5 && Math.abs(b[0] - a[0]) > 2) {
+      segs.push({
+        axis: "h",
+        coord: (a[1] + b[1]) / 2,
+        min: Math.min(a[0], b[0]),
+        max: Math.max(a[0], b[0]),
+      });
+    } else if (Math.abs(a[0] - b[0]) <= 0.5 && Math.abs(b[1] - a[1]) > 2) {
+      segs.push({
+        axis: "v",
+        coord: (a[0] + b[0]) / 2,
+        min: Math.min(a[1], b[1]),
+        max: Math.max(a[1], b[1]),
+      });
+    }
+  }
+  return segs;
+}
+
+function segmentOverlapsRouted(
+  axis: "h" | "v",
+  coord: number,
+  min: number,
+  max: number,
+  routedSegments: RoutedSegment[],
+  tol = 9
+): boolean {
+  for (const seg of routedSegments) {
+    if (seg.axis !== axis) continue;
+    if (Math.abs(seg.coord - coord) < tol) {
+      if (Math.min(max, seg.max) > Math.max(min, seg.min) + 2) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function segmentCoincidesWithContainerBorder(
+  axis: "h" | "v",
+  coord: number,
+  min: number,
+  max: number,
+  containerBoxes: BoundingBox[],
+  tol = 9
+): boolean {
+  for (const c of containerBoxes) {
+    if (axis === "v") {
+      if (
+        (Math.abs(coord - c.x) < tol ||
+          Math.abs(coord - (c.x + c.width)) < tol) &&
+        max > c.y - 4 &&
+        min < c.y + c.height + 4
+      ) {
+        return true;
+      }
+    } else {
+      if (
+        (Math.abs(coord - c.y) < tol ||
+          Math.abs(coord - (c.y + c.height)) < tol) &&
+        max > c.x - 4 &&
+        min < c.x + c.width + 4
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function polylineHasTrackOrBorderCollision(
+  pts: [number, number][],
+  routedSegments: RoutedSegment[],
+  containerBoxes: BoundingBox[]
+): boolean {
+  const segs = extractOrthogonalSegments(pts);
+  for (let i = 0; i < segs.length; i++) {
+    const s = segs[i];
+    // Skip very short endpoint port stubs (< 14px) attached directly to ports
+    if ((i === 0 || i === segs.length - 1) && s.max - s.min < 14) continue;
+    if (
+      segmentOverlapsRouted(s.axis, s.coord, s.min, s.max, routedSegments, 8)
+    ) {
+      return true;
+    }
+    if (
+      segmentCoincidesWithContainerBorder(
+        s.axis,
+        s.coord,
+        s.min,
+        s.max,
+        containerBoxes,
+        8
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Finds a minimum-bend, shortest-path orthogonal route from p1 to p2 on a Hanan visibility grid
- * avoiding all intermediate and endpoint obstacle bounding boxes.
+ * avoiding all intermediate and endpoint obstacle bounding boxes, container borders, and previously routed tracks.
  */
 function findObstacleFreeOrthogonalPath(
   p1: [number, number],
@@ -894,37 +1083,82 @@ function findObstacleFreeOrthogonalPath(
   side2: PortSide,
   rawObstacles: BoundingBox[],
   paddedObstacles: BoundingBox[],
-  stub = 20
+  stub = 20,
+  routedSegments: RoutedSegment[] = [],
+  containerBoxes: BoundingBox[] = []
 ): [number, number][] | null {
   const [n1x, n1y] = getNormalVector(side1);
   const [n2x, n2y] = getNormalVector(side2);
 
-  let s1: [number, number] = [p1[0] + n1x * stub, p1[1] + n1y * stub];
-  if (
-    pointInsideAnyObstacle(s1, paddedObstacles) ||
-    polylineHitsObstacles([p1, s1], paddedObstacles)
-  ) {
-    const shortStub: [number, number] = [p1[0] + n1x * 8, p1[1] + n1y * 8];
-    s1 = !polylineHitsObstacles([p1, shortStub], paddedObstacles)
-      ? shortStub
-      : p1;
-  }
+  const computeCleanStub = (
+    p: [number, number],
+    side: PortSide,
+    nx: number,
+    ny: number
+  ): [number, number] => {
+    let s: [number, number] = [p[0] + nx * stub, p[1] + ny * stub];
+    // If stub lands right on an enclosing container border (e.g. group pad=20 == stub=20), push it cleanly outside
+    for (const c of containerBoxes) {
+      const pInside =
+        p[0] > c.x + 2 &&
+        p[0] < c.x + c.width - 2 &&
+        p[1] > c.y + 2 &&
+        p[1] < c.y + c.height - 2;
+      if (!pInside) continue;
+      if (side === "right" && Math.abs(s[0] - (c.x + c.width)) < 12) {
+        const pushed: [number, number] = [c.x + c.width + 18, p[1]];
+        if (!polylineHitsObstacles([p, pushed], paddedObstacles)) s = pushed;
+      } else if (side === "left" && Math.abs(s[0] - c.x) < 12) {
+        const pushed: [number, number] = [c.x - 18, p[1]];
+        if (!polylineHitsObstacles([p, pushed], paddedObstacles)) s = pushed;
+      } else if (side === "bottom" && Math.abs(s[1] - (c.y + c.height)) < 12) {
+        const pushed: [number, number] = [p[0], c.y + c.height + 18];
+        if (!polylineHitsObstacles([p, pushed], paddedObstacles)) s = pushed;
+      } else if (side === "top" && Math.abs(s[1] - c.y) < 12) {
+        const pushed: [number, number] = [p[0], c.y - 18];
+        if (!polylineHitsObstacles([p, pushed], paddedObstacles)) s = pushed;
+      }
+    }
+    if (
+      pointInsideAnyObstacle(s, paddedObstacles) ||
+      polylineHitsObstacles([p, s], paddedObstacles)
+    ) {
+      const shortStub: [number, number] = [p[0] + nx * 8, p[1] + ny * 8];
+      s = !polylineHitsObstacles([p, shortStub], paddedObstacles)
+        ? shortStub
+        : p;
+    } else if (routedSegments.length > 0) {
+      // If the default 20px stub lands directly on top of a previously routed perpendicular track,
+      // step back to a 10px stub so Dijkstra can branch onto a clean parallel lane right away.
+      const perpAxis: "h" | "v" = side === "top" || side === "bottom" ? "h" : "v";
+      const sCoord = perpAxis === "h" ? s[1] : s[0];
+      const sPerp = perpAxis === "h" ? s[0] : s[1];
+      const hitsPerpTrack = routedSegments.some(
+        (seg) =>
+          seg.axis === perpAxis &&
+          Math.abs(seg.coord - sCoord) < 10 &&
+          sPerp >= seg.min - 24 &&
+          sPerp <= seg.max + 24
+      );
+      if (hitsPerpTrack) {
+        const shortStub: [number, number] = [p[0] + nx * 10, p[1] + ny * 10];
+        if (!polylineHitsObstacles([p, shortStub], paddedObstacles)) {
+          s = shortStub;
+        }
+      }
+    }
+    return s;
+  };
 
-  let s2: [number, number] = [p2[0] + n2x * stub, p2[1] + n2y * stub];
-  if (
-    pointInsideAnyObstacle(s2, paddedObstacles) ||
-    polylineHitsObstacles([s2, p2], paddedObstacles)
-  ) {
-    const shortStub: [number, number] = [p2[0] + n2x * 8, p2[1] + n2y * 8];
-    s2 = !polylineHitsObstacles([shortStub, p2], paddedObstacles)
-      ? shortStub
-      : p2;
-  }
+  const s1 = computeCleanStub(p1, side1, n1x, n1y);
+  const s2 = computeCleanStub(p2, side2, n2x, n2y);
 
-  const clearance = 18;
+  const clearances = [18, 32];
   const xSet = new Set<number>([
     Math.round(p1[0]),
     Math.round(p2[0]),
+    Math.round(p1[0] + n1x * 12),
+    Math.round(p2[0] + n2x * 12),
     Math.round(s1[0]),
     Math.round(s2[0]),
     Math.round((s1[0] + s2[0]) / 2),
@@ -932,27 +1166,51 @@ function findObstacleFreeOrthogonalPath(
   const ySet = new Set<number>([
     Math.round(p1[1]),
     Math.round(p2[1]),
+    Math.round(p1[1] + n1y * 12),
+    Math.round(p2[1] + n2y * 12),
     Math.round(s1[1]),
     Math.round(s2[1]),
     Math.round((s1[1] + s2[1]) / 2),
   ]);
 
   for (const b of rawObstacles) {
-    xSet.add(Math.round(b.x - clearance));
-    xSet.add(Math.round(b.x + b.width + clearance));
-    ySet.add(Math.round(b.y - clearance));
-    ySet.add(Math.round(b.y + b.height + clearance));
+    for (const cl of clearances) {
+      xSet.add(Math.round(b.x - cl));
+      xSet.add(Math.round(b.x + b.width + cl));
+      ySet.add(Math.round(b.y - cl));
+      ySet.add(Math.round(b.y + b.height + cl));
+    }
+  }
+
+  for (const c of containerBoxes) {
+    for (const cl of clearances) {
+      xSet.add(Math.round(c.x - cl));
+      xSet.add(Math.round(c.x + c.width + cl));
+      ySet.add(Math.round(c.y - cl));
+      ySet.add(Math.round(c.y + c.height + cl));
+    }
+  }
+
+  // Add shifted alternate parallel tracks around already-routed segments so edges fan into parallel lanes
+  for (const seg of routedSegments) {
+    if (seg.axis === "v") {
+      xSet.add(Math.round(seg.coord - 14));
+      xSet.add(Math.round(seg.coord + 14));
+    } else {
+      ySet.add(Math.round(seg.coord - 14));
+      ySet.add(Math.round(seg.coord + 14));
+    }
   }
 
   const baseXs = Array.from(xSet).sort((a, b) => a - b);
   const baseYs = Array.from(ySet).sort((a, b) => a - b);
   for (let i = 0; i < baseXs.length - 1; i++) {
-    if (baseXs[i + 1] - baseXs[i] > 16) {
+    if (baseXs[i + 1] - baseXs[i] > 24) {
       xSet.add(Math.round((baseXs[i] + baseXs[i + 1]) / 2));
     }
   }
   for (let i = 0; i < baseYs.length - 1; i++) {
-    if (baseYs[i + 1] - baseYs[i] > 16) {
+    if (baseYs[i + 1] - baseYs[i] > 24) {
       ySet.add(Math.round((baseYs[i] + baseYs[i + 1]) / 2));
     }
   }
@@ -1034,6 +1292,33 @@ function findObstacleFreeOrthogonalPath(
       let extraCost = uDir !== vDir ? bendPenalty : 0;
       if (vXi === endXi && vYi === endYi && vDir !== targetDir) {
         extraCost += bendPenalty;
+      }
+
+      // Penalize overlapping previously routed edge segments (track reservation)
+      const axis: "h" | "v" = vDir === 0 ? "h" : "v";
+      const coord = vDir === 0 ? uy : ux;
+      const segMin = vDir === 0 ? Math.min(ux, vx) : Math.min(uy, vy);
+      const segMax = vDir === 0 ? Math.max(ux, vx) : Math.max(uy, vy);
+      if (
+        routedSegments.length > 0 &&
+        segmentOverlapsRouted(axis, coord, segMin, segMax, routedSegments, 10)
+      ) {
+        extraCost += 480 + segLen * 3;
+      }
+
+      // Penalize riding directly on top of a Group/Window container border
+      if (
+        containerBoxes.length > 0 &&
+        segmentCoincidesWithContainerBorder(
+          axis,
+          coord,
+          segMin,
+          segMax,
+          containerBoxes,
+          10
+        )
+      ) {
+        extraCost += 650 + segLen * 4;
       }
 
       const vState = encode(vXi, vYi, vDir);
@@ -1148,7 +1433,9 @@ function evalPointAlongPolyline(
 
 function findLongestClearSegmentMidpoint(
   pts: [number, number][],
-  obstacles: BoundingBox[]
+  obstacles: BoundingBox[],
+  labelW = 80,
+  labelH = 22
 ): [number, number] {
   if (pts.length === 0) return [0, 0];
   if (pts.length === 1) return pts[0];
@@ -1159,19 +1446,43 @@ function findLongestClearSegmentMidpoint(
   ];
   let bestScore = -Infinity;
 
+  const sampleRatios = [0.5, 0.38, 0.62, 0.26, 0.74];
+
   for (let i = 0; i < pts.length - 1; i++) {
     const a = pts[i];
     const b = pts[i + 1];
     const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
-    const mid: [number, number] = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
-    const hitObs = pointInsideAnyObstacle(mid, obstacles);
-    // Prefer middle segments of a multi-segment route that are long and clear of obstacles
+    if (len < 8) continue;
     const isInteriorSeg = pts.length >= 4 && i > 0 && i < pts.length - 2;
-    const score =
-      len + (isInteriorSeg ? 35 : 0) - (hitObs ? 1000 : 0);
-    if (score > bestScore) {
-      bestScore = score;
-      bestMid = mid;
+
+    for (const r of sampleRatios) {
+      const pt: [number, number] = [
+        a[0] + (b[0] - a[0]) * r,
+        a[1] + (b[1] - a[1]) * r,
+      ];
+      const lBox: BoundingBox = {
+        x: pt[0] - labelW / 2,
+        y: pt[1] - labelH / 2,
+        width: labelW,
+        height: labelH,
+      };
+      const ptHits = pointInsideAnyObstacle(pt, obstacles);
+      let boxHitCount = 0;
+      for (const obs of obstacles) {
+        if (boxesOverlap(lBox, obs, 2)) {
+          boxHitCount++;
+        }
+      }
+      const centerBias = 1 - Math.abs(r - 0.5) * 0.4;
+      const score =
+        len * centerBias +
+        (isInteriorSeg ? 35 : 0) -
+        (ptHits ? 2000 : 0) -
+        boxHitCount * 900;
+      if (score > bestScore) {
+        bestScore = score;
+        bestMid = pt;
+      }
     }
   }
   return bestMid;
@@ -1210,6 +1521,33 @@ function boxesOverlap(
 // Main Connection Routing Pipeline
 // ============================================================================
 
+function resolveAnchorBoxWithFallback(
+  targetId: string,
+  anchorRegistry: Record<string, BoundingBox>
+): { resolvedId: string; box: BoundingBox | undefined } {
+  if (anchorRegistry[targetId]) {
+    return { resolvedId: targetId, box: anchorRegistry[targetId] };
+  }
+  const dotIdx = targetId.indexOf(".");
+  if (dotIdx > 0) {
+    const baseId = targetId.slice(0, dotIdx);
+    const subId = targetId.slice(dotIdx + 1);
+    // 1-indexed field_N fallback for 0-indexed bitfield sub-anchors (field_0 .. field_{N-1})
+    const fieldMatch = subId.match(/^field_(\d+)$/);
+    if (fieldMatch) {
+      const oneBasedIdx = parseInt(fieldMatch[1], 10) - 1;
+      const zeroBasedId = `${baseId}.field_${oneBasedIdx}`;
+      if (oneBasedIdx >= 0 && anchorRegistry[zeroBasedId]) {
+        return { resolvedId: zeroBasedId, box: anchorRegistry[zeroBasedId] };
+      }
+    }
+    if (anchorRegistry[baseId]) {
+      return { resolvedId: baseId, box: anchorRegistry[baseId] };
+    }
+  }
+  return { resolvedId: targetId, box: undefined };
+}
+
 export function routeConnections(
   connections: ConnectionSpec[] | undefined,
   anchorRegistry: Record<string, BoundingBox>,
@@ -1219,16 +1557,31 @@ export function routeConnections(
 ): SceneEdge[] {
   if (!connections || connections.length === 0) return [];
 
+  const { containerBoxes, containerHeaderObstacles } =
+    collectContainerBoxes(anchorRegistry);
+
   // Pass 1: Resolve endpoints, containers, sides, and collect port groups for Port Multiplexing
   const prepared: PreparedEdgeItem[] = [];
+  let compactSkipSideToggle = 0;
 
   connections.forEach((conn, idx) => {
     const id = conn.id || `edge_${idx + 1}`;
     const fromParsed = parseEndpoint(conn.from);
     const toParsed = parseEndpoint(conn.to);
 
-    const fromBox = anchorRegistry[fromParsed.targetId];
-    const toBox = anchorRegistry[toParsed.targetId];
+    const fromResolved = resolveAnchorBoxWithFallback(
+      fromParsed.targetId,
+      anchorRegistry
+    );
+    const toResolved = resolveAnchorBoxWithFallback(
+      toParsed.targetId,
+      anchorRegistry
+    );
+    fromParsed.targetId = fromResolved.resolvedId;
+    toParsed.targetId = toResolved.resolvedId;
+
+    const fromBox = fromResolved.box;
+    const toBox = toResolved.box;
     if (!fromBox || !toBox) {
       return;
     }
@@ -1254,12 +1607,168 @@ export function routeConnections(
       isSelfLoop
     );
 
+    const isSideBlockedBySibling = (
+      box: BoundingBox,
+      ownerId: string,
+      side: PortSide
+    ): boolean => {
+      if (side === "center") return false;
+      const [nx, ny] = getNormalVector(side);
+      const probePt: [number, number] = [
+        box.x + box.width / 2 + nx * 22,
+        box.y + box.height / 2 + ny * 22,
+      ];
+      if (side === "top") probePt[1] = box.y - 18;
+      else if (side === "bottom") probePt[1] = box.y + box.height + 18;
+      else if (side === "left") probePt[0] = box.x - 18;
+      else if (side === "right") probePt[0] = box.x + box.width + 18;
+
+      for (const [k, other] of Object.entries(anchorRegistry)) {
+        if (other.ownerNodeId && other.ownerNodeId !== k) continue;
+        if (k === ownerId) continue;
+        if (boxContainsBox(other, box) || boxContainsBox(box, other)) continue;
+        if (
+          probePt[0] >= other.x - 4 &&
+          probePt[0] <= other.x + other.width + 4 &&
+          probePt[1] >= other.y - 4 &&
+          probePt[1] <= other.y + other.height + 4
+        ) {
+          return true;
+        }
+      }
+      return false;
+    };
+
+    const pickUnblockedSide = (
+      preferred: PortSide,
+      box: BoundingBox,
+      ownerId: string,
+      otherBox: BoundingBox
+    ): PortSide => {
+      if (!isSideBlockedBySibling(box, ownerId, preferred)) return preferred;
+      const cx1 = box.x + box.width / 2;
+      const cy1 = box.y + box.height / 2;
+      const cx2 = otherBox.x + otherBox.width / 2;
+      const cy2 = otherBox.y + otherBox.height / 2;
+      const altCandidates: PortSide[] =
+        preferred === "top" || preferred === "bottom"
+          ? cx2 >= cx1
+            ? ["right", "left"]
+            : ["left", "right"]
+          : cy2 >= cy1
+          ? ["bottom", "top"]
+          : ["top", "bottom"];
+      for (const alt of altCandidates) {
+        if (!isSideBlockedBySibling(box, ownerId, alt)) return alt;
+      }
+      return preferred;
+    };
+
     let fromSide = compact
-      ? autoSides.fromSide
+      ? pickUnblockedSide(
+          autoSides.fromSide,
+          ownerFromBox,
+          fromOwnerId,
+          ownerToBox
+        )
       : fromParsed.side || autoSides.fromSide;
     let toSide = compact
-      ? autoSides.toSide
+      ? pickUnblockedSide(
+          autoSides.toSide,
+          ownerToBox,
+          toOwnerId,
+          ownerFromBox
+        )
       : toParsed.side || autoSides.toSide;
+
+    // In compact vertical mode, detect skip-level (leapfrog) vertical edges where another node sits directly
+    // between ownerFromBox and ownerToBox. Convert them from 4-bend S-hooks into clean 2-bend outer C-brackets
+    // (left->left or right->right), alternating sides for balanced visual symmetry.
+    if (
+      compact &&
+      !isSelfLoop &&
+      ((fromSide === "bottom" && toSide === "top") ||
+        (fromSide === "top" && toSide === "bottom"))
+    ) {
+      const upperBox =
+        ownerFromBox.y <= ownerToBox.y ? ownerFromBox : ownerToBox;
+      const lowerBox =
+        ownerFromBox.y <= ownerToBox.y ? ownerToBox : ownerFromBox;
+      const bandTop = upperBox.y + upperBox.height + 2;
+      const bandBot = lowerBox.y - 2;
+      if (bandBot > bandTop + 16) {
+        const cx1 = upperBox.x + upperBox.width / 2;
+        const cx2 = lowerBox.x + lowerBox.width / 2;
+        const xSpanMin = Math.min(cx1, cx2) - 24;
+        const xSpanMax = Math.max(cx1, cx2) + 24;
+        let hasIntermediateBlocker = false;
+        for (const [k, other] of Object.entries(anchorRegistry)) {
+          if (other.ownerNodeId && other.ownerNodeId !== k) continue;
+          if (k === fromOwnerId || k === toOwnerId) continue;
+          if (
+            boxContainsBox(other, ownerFromBox) ||
+            boxContainsBox(other, ownerToBox) ||
+            boxContainsBox(ownerFromBox, other) ||
+            boxContainsBox(ownerToBox, other)
+          ) {
+            continue;
+          }
+          if (
+            other.y < bandBot &&
+            other.y + other.height > bandTop &&
+            other.x < xSpanMax &&
+            other.x + other.width > xSpanMin
+          ) {
+            hasIntermediateBlocker = true;
+            break;
+          }
+        }
+
+        if (hasIntermediateBlocker) {
+          // Prefer alternating left/right outer channels, respecting explicit sub-anchor side hint if available
+          const preferredSkipSide: PortSide =
+            compactSkipSideToggle % 2 === 0 ? "left" : "right";
+          const altSkipSide: PortSide =
+            preferredSkipSide === "left" ? "right" : "left";
+          const chosenSide =
+            !isSideBlockedBySibling(ownerFromBox, fromOwnerId, preferredSkipSide) &&
+            !isSideBlockedBySibling(ownerToBox, toOwnerId, preferredSkipSide)
+              ? preferredSkipSide
+              : !isSideBlockedBySibling(ownerFromBox, fromOwnerId, altSkipSide) &&
+                !isSideBlockedBySibling(ownerToBox, toOwnerId, altSkipSide)
+              ? altSkipSide
+              : null;
+          if (chosenSide) {
+            fromSide = chosenSide;
+            toSide = chosenSide;
+            compactSkipSideToggle++;
+          }
+        }
+      }
+    }
+
+    // In compact mode, if fromSide had to detour horizontally (left/right) around a stacked sibling
+    // and toSide is "top" directly under an enclosing container's title bar, match the horizontal side
+    // so the edge forms a clean outside C-bracket instead of penetrating the target group's header.
+    if (
+      compact &&
+      !isSelfLoop &&
+      (fromSide === "left" || fromSide === "right") &&
+      toSide === "top"
+    ) {
+      const targetUnderContainerHeader = containerBoxes.some(
+        (c) =>
+          boxContainsBox(c, ownerToBox) &&
+          !boxContainsBox(c, ownerFromBox) &&
+          ownerToBox.y >= c.y + 36
+      );
+      if (
+        targetUnderContainerHeader &&
+        !isSideBlockedBySibling(ownerToBox, toOwnerId, fromSide)
+      ) {
+        toSide = fromSide;
+      }
+    }
 
     if (isSelfLoop && !fromParsed.side && toParsed.side) {
       fromSide = toParsed.side === "top" ? "right" : "top";
@@ -1293,6 +1802,8 @@ export function routeConnections(
       fromMultiplexed: false,
       toMultiplexed: false,
       corridorOffset: 0,
+      corridorBundleIndex: 0,
+      corridorBundleSize: 1,
     });
   });
 
@@ -1366,6 +1877,97 @@ export function routeConnections(
     });
   });
 
+  // Pass 1b-2: Same-Owner-Side De-crowding (when a whole-node port and a sub-anchor port share the same owner side)
+  const ownerSideGroups = new Map<string, PortSlotEntry[]>();
+  for (const item of prepared) {
+    if (!item.fromParsed.explicitRatio && item.fromSide !== "center") {
+      const oKey = `${item.fromOwnerId}::${item.fromSide}`;
+      const isHoriz = item.fromSide === "left" || item.fromSide === "right";
+      const otherCoord = isHoriz
+        ? item.toBox.y + item.toBox.height / 2
+        : item.toBox.x + item.toBox.width / 2;
+      const list = ownerSideGroups.get(oKey) || [];
+      list.push({ item, end: "from", sortCoord: otherCoord });
+      ownerSideGroups.set(oKey, list);
+    }
+    if (!item.toParsed.explicitRatio && item.toSide !== "center") {
+      const oKey = `${item.toOwnerId}::${item.toSide}`;
+      const isHoriz = item.toSide === "left" || item.toSide === "right";
+      const otherCoord = isHoriz
+        ? item.fromBox.y + item.fromBox.height / 2
+        : item.fromBox.x + item.fromBox.width / 2;
+      const list = ownerSideGroups.get(oKey) || [];
+      list.push({ item, end: "to", sortCoord: otherCoord });
+      ownerSideGroups.set(oKey, list);
+    }
+  }
+
+  ownerSideGroups.forEach((entries) => {
+    if (entries.length <= 1) return;
+    // Only de-crowd when whole-node ports and sub-anchor ports share the same owner side;
+    // pure whole-node fan-out is already symmetrically multiplexed by Pass 1b.
+    const hasSub = entries.some((e) =>
+      e.end === "from" ? e.item.isFromSubAnchor : e.item.isToSubAnchor
+    );
+    const hasWhole = entries.some(
+      (e) => !(e.end === "from" ? e.item.isFromSubAnchor : e.item.isToSubAnchor)
+    );
+    if (!hasSub || !hasWhole) return;
+    const getCoord = (e: PortSlotEntry): number => {
+      const side = e.end === "from" ? e.item.fromSide : e.item.toSide;
+      const box = e.end === "from" ? e.item.fromBox : e.item.toBox;
+      const ratio = e.end === "from" ? e.item.fromRatio : e.item.toRatio;
+      const isHoriz = side === "left" || side === "right";
+      return isHoriz ? box.y + box.height * ratio : box.x + box.width * ratio;
+    };
+
+    for (const e of entries) {
+      const isSub =
+        e.end === "from" ? e.item.isFromSubAnchor : e.item.isToSubAnchor;
+      if (isSub) continue;
+      const ownerBox =
+        e.end === "from" ? e.item.outerFromBox : e.item.outerToBox;
+      const side = e.end === "from" ? e.item.fromSide : e.item.toSide;
+      const isHoriz = side === "left" || side === "right";
+      const start = isHoriz ? ownerBox.y : ownerBox.x;
+      const span = isHoriz ? ownerBox.height : ownerBox.width;
+      if (span <= 40) continue;
+
+      // Project desired coordinate toward target center, clamped to [0.18, 0.82]
+      let targetRatio = Math.max(
+        0.18,
+        Math.min(0.82, (e.sortCoord - start) / span)
+      );
+      let candidateCoord = start + span * targetRatio;
+
+      // Ensure at least 44px separation from all sibling sub-anchor ports on the same owner side
+      for (const other of entries) {
+        if (other === e) continue;
+        const otherCoord = getCoord(other);
+        if (Math.abs(candidateCoord - otherCoord) < 44) {
+          const dir =
+            e.sortCoord >= other.sortCoord
+              ? 1
+              : -1;
+          const shifted = otherCoord + dir * 48;
+          targetRatio = Math.max(
+            0.15,
+            Math.min(0.85, (shifted - start) / span)
+          );
+          candidateCoord = start + span * targetRatio;
+        }
+      }
+
+      if (e.end === "from") {
+        e.item.fromRatio = targetRatio;
+        e.item.fromMultiplexed = true;
+      } else {
+        e.item.toRatio = targetRatio;
+        e.item.toMultiplexed = true;
+      }
+    }
+  });
+
   // Pass 1c: Parallel Corridor Channel Offsetting (separate multiple Z-bends in the same corridor)
   const corridorGroups = new Map<string, PreparedEdgeItem[]>();
   for (const item of prepared) {
@@ -1384,15 +1986,106 @@ export function routeConnections(
       corridorGroups.set(k, list);
     }
   }
-  corridorGroups.forEach((items) => {
-    if (items.length <= 1) return;
-    items.forEach((it, i) => {
-      it.corridorOffset = (i - (items.length - 1) / 2) * 14;
-    });
+  corridorGroups.forEach((allItems, key) => {
+    if (allItems.length <= 1) return;
+    const isHorizCorridor = key.startsWith("H::");
+
+    // Partition items in the same corridor into connected components whose perpendicular spans overlap,
+    // so e.g. a left-branch edge doesn't get pushed off-center by 3 right-branch edges in the same vertical gap.
+    const getPerpSpan = (it: PreparedEdgeItem): [number, number] => {
+      if (isHorizCorridor) {
+        const y1 = it.fromBox.y + it.fromBox.height * it.fromRatio;
+        const y2 = it.toBox.y + it.toBox.height * it.toRatio;
+        return [Math.min(y1, y2) - 18, Math.max(y1, y2) + 18];
+      }
+      const x1 = it.fromBox.x + it.fromBox.width * it.fromRatio;
+      const x2 = it.toBox.x + it.toBox.width * it.toRatio;
+      return [Math.min(x1, x2) - 24, Math.max(x1, x2) + 24];
+    };
+
+    const spans = allItems.map(getPerpSpan);
+    const visitedComp = new Array<boolean>(allItems.length).fill(false);
+    const components: PreparedEdgeItem[][] = [];
+
+    for (let i = 0; i < allItems.length; i++) {
+      if (visitedComp[i]) continue;
+      const comp: PreparedEdgeItem[] = [];
+      const stack = [i];
+      visitedComp[i] = true;
+      while (stack.length > 0) {
+        const idx = stack.pop()!;
+        comp.push(allItems[idx]);
+        const [aMin, aMax] = spans[idx];
+        for (let j = 0; j < allItems.length; j++) {
+          if (visitedComp[j]) continue;
+          const [bMin, bMax] = spans[j];
+          if (Math.min(aMax, bMax) >= Math.max(aMin, bMin)) {
+            visitedComp[j] = true;
+            stack.push(j);
+          }
+        }
+      }
+      components.push(comp);
+    }
+
+    for (const items of components) {
+      if (items.length <= 1) continue;
+      let railStep = 16;
+
+      if (isHorizCorridor) {
+        // Planar PCB bus ordering: if edges generally go upward (toY < fromY), sort top-to-bottom
+        // so the top edge bends first (leftmost rail) and bottom edge bends last (rightmost rail), minimizing crossings.
+        let sumDy = 0;
+        for (const it of items) {
+          const fy = it.fromBox.y + it.fromBox.height * it.fromRatio;
+          const ty = it.toBox.y + it.toBox.height * it.toRatio;
+          sumDy += ty - fy;
+        }
+        const goingUp = sumDy <= 0;
+        items.sort((a, b) => {
+          const ay = a.fromBox.y + a.fromBox.height * a.fromRatio;
+          const by = b.fromBox.y + b.fromBox.height * b.fromRatio;
+          return goingUp ? ay - by : by - ay;
+        });
+      } else {
+        let sumDx = 0;
+        for (const it of items) {
+          const fx = it.fromBox.x + it.fromBox.width * it.fromRatio;
+          const tx = it.toBox.x + it.toBox.width * it.toRatio;
+          sumDx += tx - fx;
+        }
+        const goingLeft = sumDx <= 0;
+        items.sort((a, b) => {
+          const ax = a.fromBox.x + a.fromBox.width * a.fromRatio;
+          const bx = b.fromBox.x + b.fromBox.width * b.fromRatio;
+          return goingLeft ? ax - bx : bx - ax;
+        });
+
+        // In vertical corridors with multiple labeled horizontal rails, spread rails generously (up to 28px pitch)
+        // so 22px-tall labels have breathing room and stay centered directly on their horizontal rail.
+        const vBounds = items[0].corridor.vert;
+        if (vBounds) {
+          const avail = vBounds[1] - vBounds[0] - 38;
+          if (avail > 0) {
+            railStep = Math.max(
+              16,
+              Math.min(28, Math.floor(avail / (items.length - 1)))
+            );
+          }
+        }
+      }
+
+      items.forEach((it, i) => {
+        it.corridorOffset = (i - (items.length - 1) / 2) * railStep;
+        it.corridorBundleIndex = i;
+        it.corridorBundleSize = items.length;
+      });
+    }
   });
 
   // Pass 2: Route paths and place labels
   const edges: SceneEdge[] = [];
+  const routedSegments: RoutedSegment[] = [];
   const placedLabelBoxes: Array<{
     x: number;
     y: number;
@@ -1426,6 +2119,8 @@ export function routeConnections(
       fromMultiplexed,
       toMultiplexed,
       corridorOffset,
+      corridorBundleIndex,
+      corridorBundleSize,
     } = item;
 
     const p1 = getProjectedPortPoint(
@@ -1461,13 +2156,51 @@ export function routeConnections(
     const routing = conn.routing || "orthogonal";
     const cornerRadius = conn.cornerRadius ?? 8;
     const stub = conn.stub ?? 20;
+    const startMarker = conn.startMarker || "none";
+    const endMarker = conn.endMarker || "arrow";
+    const hasStartArrow = startMarker === "arrow";
+    const hasEndArrow = endMarker === "arrow";
+    // Unified arrow pullback standard: 7.0px marker tip extension (9.5 - 2.5) + 0.7px target border half-stroke (1.5px / 2)
+    // so the arrowhead tip kisses the outer edge of the target border without overlapping across the border stroke.
+    const ARROW_PULLBACK = 7.7;
+
+    const pullbackPolyline = (
+      pts: [number, number][]
+    ): [number, number][] => {
+      if (pts.length < 2 || (!hasStartArrow && !hasEndArrow)) return pts;
+      const copy = pts.map((pt) => [pt[0], pt[1]] as [number, number]);
+      if (hasStartArrow) {
+        const dx = copy[1][0] - copy[0][0];
+        const dy = copy[1][1] - copy[0][1];
+        const len = Math.hypot(dx, dy);
+        if (len > 4) {
+          const pull = Math.min(ARROW_PULLBACK, len * 0.45);
+          copy[0][0] += (dx / len) * pull;
+          copy[0][1] += (dy / len) * pull;
+        }
+      }
+      if (hasEndArrow) {
+        const lastIdx = copy.length - 1;
+        const dx = copy[lastIdx][0] - copy[lastIdx - 1][0];
+        const dy = copy[lastIdx][1] - copy[lastIdx - 1][1];
+        const len = Math.hypot(dx, dy);
+        if (len > 4) {
+          const pull = Math.min(ARROW_PULLBACK, len * 0.45);
+          copy[lastIdx][0] -= (dx / len) * pull;
+          copy[lastIdx][1] -= (dy / len) * pull;
+        }
+      }
+      return copy;
+    };
 
     const { paddedObstacles, rawObstacles } = buildEdgeObstacles(
       fromOwnerId,
       toOwnerId,
       ownerFromBox,
       ownerToBox,
-      anchorRegistry
+      anchorRegistry,
+      fromSide,
+      toSide
     );
 
     let pathD = "";
@@ -1484,15 +2217,17 @@ export function routeConnections(
         ownerFromBox,
         stub
       );
-      pathD = buildRoundedPolylinePath(points, cornerRadius);
+      pathD = buildRoundedPolylinePath(pullbackPolyline(points), cornerRadius);
     } else if (routing === "straight") {
-      pathD = `M ${Math.round(p1[0])} ${Math.round(p1[1])} L ${Math.round(p2[0])} ${Math.round(p2[1])}`;
+      const renderPts = pullbackPolyline([p1, p2]);
+      pathD = `M ${renderPts[0][0].toFixed(1)} ${renderPts[0][1].toFixed(1)} L ${renderPts[1][0].toFixed(1)} ${renderPts[1][1].toFixed(1)}`;
     } else if (routing === "curved") {
       if (
         (Math.abs(p1[0] - p2[0]) <= 1 || Math.abs(p1[1] - p2[1]) <= 1) &&
         !polylineHitsObstacles([p1, p2], paddedObstacles)
       ) {
-        pathD = `M ${Math.round(p1[0])} ${Math.round(p1[1])} L ${Math.round(p2[0])} ${Math.round(p2[1])}`;
+        const renderPts = pullbackPolyline([p1, p2]);
+        pathD = `M ${renderPts[0][0].toFixed(1)} ${renderPts[0][1].toFixed(1)} L ${renderPts[1][0].toFixed(1)} ${renderPts[1][1].toFixed(1)}`;
         points = [p1, p2];
       } else {
         const [n1x, n1y] = getNormalVector(fromSide);
@@ -1517,8 +2252,14 @@ export function routeConnections(
           p2[0] + n2x * controlLen,
           p2[1] + n2y * controlLen,
         ];
+        const renderP1: [number, number] = hasStartArrow
+          ? [p1[0] + n1x * ARROW_PULLBACK, p1[1] + n1y * ARROW_PULLBACK]
+          : p1;
+        const renderP2: [number, number] = hasEndArrow
+          ? [p2[0] + n2x * ARROW_PULLBACK, p2[1] + n2y * ARROW_PULLBACK]
+          : p2;
         bezierControls = [c1, c2];
-        pathD = `M ${Math.round(p1[0])} ${Math.round(p1[1])} C ${Math.round(c1[0])} ${Math.round(c1[1])}, ${Math.round(c2[0])} ${Math.round(c2[1])}, ${Math.round(p2[0])} ${Math.round(p2[1])}`;
+        pathD = `M ${renderP1[0].toFixed(1)} ${renderP1[1].toFixed(1)} C ${c1[0].toFixed(1)} ${c1[1].toFixed(1)}, ${c2[0].toFixed(1)} ${c2[1].toFixed(1)}, ${renderP2[0].toFixed(1)} ${renderP2[1].toFixed(1)}`;
         points = [
           p1,
           evalCubicBezier(p1, c1, c2, p2, 0.25),
@@ -1540,7 +2281,10 @@ export function routeConnections(
         corridorOffset
       );
 
-      if (polylineHitsObstacles(points, paddedObstacles)) {
+      if (
+        polylineHitsObstacles(points, paddedObstacles) ||
+        polylineHasTrackOrBorderCollision(points, routedSegments, containerBoxes)
+      ) {
         const detour = findObstacleFreeOrthogonalPath(
           p1,
           fromSide,
@@ -1548,7 +2292,9 @@ export function routeConnections(
           toSide,
           rawObstacles,
           paddedObstacles,
-          stub
+          stub,
+          routedSegments,
+          containerBoxes
         );
         if (detour && detour.length >= 2) {
           points = detour;
@@ -1556,7 +2302,7 @@ export function routeConnections(
         }
       }
 
-      pathD = buildRoundedPolylinePath(points, cornerRadius);
+      pathD = buildRoundedPolylinePath(pullbackPolyline(points), cornerRadius);
     }
 
     const tone = conn.tone || "neutral";
@@ -1599,9 +2345,19 @@ export function routeConnections(
       let anchorPt: [number, number];
 
       if (isSelfLoop) {
-        anchorPt = findLongestClearSegmentMidpoint(points, paddedObstacles);
+        anchorPt = findLongestClearSegmentMidpoint(
+          points,
+          paddedObstacles,
+          labelW,
+          labelH
+        );
       } else if (usedObstacleDetour && !hasExplicitPos) {
-        anchorPt = findLongestClearSegmentMidpoint(points, paddedObstacles);
+        anchorPt = findLongestClearSegmentMidpoint(
+          points,
+          rawObstacles,
+          labelW,
+          labelH
+        );
       } else if (bezierControls) {
         const [c1, c2] = bezierControls;
         if (
@@ -1681,10 +2437,47 @@ export function routeConnections(
                 (points[1][1] + points[2][1]) / 2,
               ];
       } else if (points.length === 4 && !hasExplicitPos) {
-        anchorPt = [
-          (points[1][0] + points[2][0]) / 2,
-          (points[1][1] + points[2][1]) / 2,
-        ];
+        const isHorizZBend =
+          (fromSide === "left" || fromSide === "right") &&
+          (toSide === "left" || toSide === "right");
+        if (isHorizZBend && corridorBundleSize >= 2) {
+          // Stagger labels onto unobstructed horizontal arms for outer edges of a parallel Z-bend bundle
+          const seg0Len = Math.hypot(
+            points[1][0] - points[0][0],
+            points[1][1] - points[0][1]
+          );
+          const seg2Len = Math.hypot(
+            points[3][0] - points[2][0],
+            points[3][1] - points[2][1]
+          );
+          const minArmLen = Math.min(labelW * 0.65, 68);
+          if (corridorBundleIndex === 0 && seg2Len >= minArmLen) {
+            // Leftmost rail -> longest target-side horizontal arm
+            anchorPt = [
+              (points[2][0] + points[3][0]) / 2,
+              (points[2][1] + points[3][1]) / 2,
+            ];
+          } else if (
+            corridorBundleIndex === corridorBundleSize - 1 &&
+            seg0Len >= minArmLen
+          ) {
+            // Rightmost rail -> longest source-side horizontal arm
+            anchorPt = [
+              (points[0][0] + points[1][0]) / 2,
+              (points[0][1] + points[1][1]) / 2,
+            ];
+          } else {
+            anchorPt = [
+              (points[1][0] + points[2][0]) / 2,
+              (points[1][1] + points[2][1]) / 2,
+            ];
+          }
+        } else {
+          anchorPt = [
+            (points[1][0] + points[2][0]) / 2,
+            (points[1][1] + points[2][1]) / 2,
+          ];
+        }
       } else {
         anchorPt = evalPointAlongPolyline(points, posRatio);
       }
@@ -1706,8 +2499,16 @@ export function routeConnections(
         lx += conn.labelOffset[0];
         ly += conn.labelOffset[1];
       } else if (!isSelfLoop && !usedObstacleDetour) {
+        // Only clamp along the axis parallel to the segment carrying the label so the label
+        // stays strictly centered ON its own line (never detached vertically off a horizontal rail).
+        const is4PtHorizMiddleRail =
+          points.length === 4 && Math.abs(points[1][1] - points[2][1]) <= 0.5;
+        const is4PtVertMiddleRail =
+          points.length === 4 && Math.abs(points[1][0] - points[2][0]) <= 0.5;
+
         if (
           corridor.horiz &&
+          !is4PtVertMiddleRail &&
           (fromSide === "left" || fromSide === "right") &&
           (toSide === "left" || toSide === "right")
         ) {
@@ -1721,6 +2522,7 @@ export function routeConnections(
         }
         if (
           corridor.vert &&
+          !is4PtHorizMiddleRail &&
           (fromSide === "top" || fromSide === "bottom") &&
           (toSide === "top" || toSide === "bottom")
         ) {
@@ -1741,14 +2543,139 @@ export function routeConnections(
         height: labelH,
       };
 
-      // Avoid overlapping previously placed edge labels
-      for (const prev of placedLabelBoxes) {
-        if (boxesOverlap(candidateBox, prev, 4)) {
-          if (candidateBox.y >= prev.y) {
-            candidateBox.y = prev.y + prev.height + 6;
+      const labelObstacles: BoundingBox[] = [
+        ...rawObstacles,
+        ...containerHeaderObstacles,
+      ];
+
+      const countBoxHits = (
+        box: BoundingBox,
+        list: BoundingBox[],
+        pad = 2
+      ): number => {
+        let hits = 0;
+        for (const obs of list) {
+          if (boxesOverlap(box, obs, pad)) hits++;
+        }
+        return hits;
+      };
+
+      const countOtherEdgeSegHits = (box: BoundingBox): number => {
+        let hits = 0;
+        for (const seg of routedSegments) {
+          if (seg.axis === "h") {
+            if (
+              seg.coord >= box.y - 2 &&
+              seg.coord <= box.y + box.height + 2 &&
+              seg.max >= box.x - 2 &&
+              seg.min <= box.x + box.width + 2
+            ) {
+              hits++;
+            }
           } else {
-            candidateBox.y = prev.y - candidateBox.height - 6;
+            if (
+              seg.coord >= box.x - 2 &&
+              seg.coord <= box.x + box.width + 2 &&
+              seg.max >= box.y - 2 &&
+              seg.min <= box.y + box.height + 2
+            ) {
+              hits++;
+            }
           }
+        }
+        return hits;
+      };
+
+      // Strict On-Polyline Label Placement:
+      // If the initial label position hits any node, container header, previously placed label,
+      // or another edge's path segment/corner, slide strictly along THIS edge's polyline so the label
+      // NEVER floats off its own line and avoids visually merging over a neighboring edge.
+      const prevRoutedCount = routedSegments.length;
+      const isStaggeredBundle = corridorBundleSize >= 2 && points.length === 4;
+      const otherSegHitsInit = isStaggeredBundle
+        ? 0
+        : countOtherEdgeSegHits(candidateBox);
+      if (
+        !conn.labelOffset &&
+        (countBoxHits(candidateBox, labelObstacles, 1) > 0 ||
+          countBoxHits(candidateBox, placedLabelBoxes, 4) > 0 ||
+          otherSegHitsInit > 0)
+      ) {
+        const prefX = candidateBox.x + labelW / 2;
+        const prefY = candidateBox.y + labelH / 2;
+        const sampleRatios = [
+          0.5, 0.42, 0.58, 0.34, 0.66, 0.26, 0.74, 0.18, 0.82, 0.12, 0.88,
+        ];
+        const endA = points[0];
+        const endB = points[points.length - 1];
+
+        let bestBox: { x: number; y: number } | null = null;
+        let bestScore = -Infinity;
+
+        for (let i = 0; i < points.length - 1; i++) {
+          const a = points[i];
+          const b = points[i + 1];
+          const segLen = Math.hypot(b[0] - a[0], b[1] - a[1]);
+          if (segLen < 12) continue;
+          const isHorizSeg = Math.abs(a[1] - b[1]) <= 0.5;
+          const isVertSeg = Math.abs(a[0] - b[0]) <= 0.5;
+          const isSteepSeg =
+            isVertSeg || Math.abs(b[1] - a[1]) >= Math.abs(b[0] - a[0]) * 0.7;
+          const isInteriorSeg =
+            points.length >= 4 && i > 0 && i < points.length - 2;
+
+          for (const r of sampleRatios) {
+            const pt: [number, number] = [
+              a[0] + (b[0] - a[0]) * r,
+              a[1] + (b[1] - a[1]) * r,
+            ];
+            // Always keep the edge segment passing inside the label pill (center first, or slight lateral shift on steep/vertical segments)
+            const xOffsets =
+              isSteepSeg && labelW > 48
+                ? [0, -Math.min(labelW * 0.32, 36), Math.min(labelW * 0.32, 36)]
+                : [0];
+
+            for (const xOff of xOffsets) {
+              const testBox: BoundingBox = {
+                x: pt[0] - labelW / 2 + xOff,
+                y: pt[1] - labelH / 2,
+                width: labelW,
+                height: labelH,
+              };
+              const obsHits = countBoxHits(testBox, labelObstacles, 1);
+              const lblHits = countBoxHits(testBox, placedLabelBoxes, 4);
+              const otherHits =
+                prevRoutedCount > 0 ? countOtherEdgeSegHits(testBox) : 0;
+              const nearEnd =
+                Math.hypot(pt[0] - endA[0], pt[1] - endA[1]) < 18 ||
+                Math.hypot(pt[0] - endB[0], pt[1] - endB[1]) < 18;
+              const distToPref = Math.hypot(
+                testBox.x + labelW / 2 - prefX,
+                testBox.y + labelH / 2 - prefY
+              );
+
+              const score =
+                Math.min(segLen, 160) * 0.45 +
+                (isInteriorSeg ? 25 : 0) +
+                (isHorizSeg && segLen >= labelW * 0.65 ? 20 : 0) -
+                (xOff !== 0 ? 18 : 0) -
+                obsHits * 3000 -
+                lblHits * 2500 -
+                otherHits * 900 -
+                (nearEnd ? 350 : 0) -
+                distToPref * 0.08;
+
+              if (score > bestScore) {
+                bestScore = score;
+                bestBox = { x: testBox.x, y: testBox.y };
+              }
+            }
+          }
+        }
+
+        if (bestBox) {
+          candidateBox.x = bestBox.x;
+          candidateBox.y = bestBox.y;
         }
       }
 
@@ -1793,6 +2720,9 @@ export function routeConnections(
         durationSec,
       },
     });
+
+    // Reserve orthogonal tracks of this routed edge AFTER label placement so labels only avoid OTHER edges
+    routedSegments.push(...extractOrthogonalSegments(points));
   }
 
   return edges;

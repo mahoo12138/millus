@@ -663,4 +663,288 @@ assert.ok(
   "Remark plugin must parse YAML natively and pre-render static SSG SVG fallback"
 );
 
-console.log("✅ All compiler, layout, sub-anchor, reflow, sketch, remark, P0, P1, and P2 tests passed!");
+// 13. Test Boundary & Edge Cases: Sequence Rightmost Actor Self-Call, Long Table/Bitfield Titles, ClipPath & Callout Leader
+const edgeCaseSpec: IllustrationSpec = {
+  title: "Boundary & Edge Case Verification",
+  elements: [
+    {
+      id: "narrow_table",
+      type: "table",
+      title: "Very Long Table Header Title That Exceeds Narrow Column Cells",
+      headers: ["ID", "Val"],
+      rows: [["1", "A"]],
+    },
+    {
+      id: "seq_card",
+      type: "sequence",
+      title: "Quorum 多数派复制时序",
+      place: { rightOf: "narrow_table", gap: 60 },
+      actors: [
+        { id: "leader", label: "Leader", sublabel: "node-1", tone: "primary" },
+        { id: "follower", label: "Follower", sublabel: "node-2", tone: "accent" },
+      ],
+      messages: [
+        { from: "leader", to: "follower", label: "AppendEntries(term=14)", type: "sync" },
+        { from: "follower", to: "follower", label: "落盘 CRC32 校验", tone: "warning" },
+        { from: "follower", to: "leader", label: "AppendOK(matchIdx=902)", type: "reply" },
+      ],
+    },
+  ],
+};
+
+const edgeCaseScene = compileIllustration(edgeCaseSpec, lightTheme);
+const narrowTableNode = edgeCaseScene.nodes.find((n) => n.id === "narrow_table")!;
+assert.ok(
+  narrowTableNode.width >= 350,
+  "Table with long title must expand column widths so title never overflows table right border"
+);
+
+const seqCardNode = edgeCaseScene.nodes.find((n) => n.id === "seq_card")!;
+for (const dec of seqCardNode.decorations) {
+  if (dec.kind === "line") {
+    assert.ok(
+      dec.x >= 0 &&
+        dec.x <= seqCardNode.width &&
+        (dec.x2 ?? dec.x) >= 0 &&
+        (dec.x2 ?? dec.x) <= seqCardNode.width,
+      "All sequence diagram lines must stay inside sequence node width"
+    );
+  }
+  if (dec.kind === "path") {
+    assert.ok(
+      dec.markerEnd?.startsWith("arrow-"),
+      "Sequence self-call loop path must use a sharp SVG marker-end arrowhead"
+    );
+  }
+  if (dec.kind === "text" && dec.text === "落盘 CRC32 校验") {
+    assert.equal(
+      dec.textAnchor,
+      "end",
+      "Self-call on rightmost actor must face inward with textAnchor='end' so it never overflows right border"
+    );
+    assert.ok(
+      dec.x > 100 && dec.x < seqCardNode.width - 40,
+      "Self-call label must sit cleanly inside the central timeline corridor"
+    );
+  }
+}
+
+// Verify bitfield cells fill 100% of container width edge-to-edge (rx=0, last cell right === node.width)
+const pktHdrNode = p1Scene.nodes.find((n) => n.id === "pkt_hdr")!;
+const pktCells = pktHdrNode.decorations.filter((d) => d.kind === "table-cell");
+assert.equal(pktCells[0].x, 0, "First bitfield cell must start flush at x=0");
+assert.equal(
+  pktCells[pktCells.length - 1].x + (pktCells[pktCells.length - 1].width || 0),
+  pktHdrNode.width,
+  "Last bitfield cell must fill flush to the right border of bitfield container"
+);
+
+const edgeCaseSvg = renderSceneGraphToSvgString(edgeCaseScene);
+assert.ok(
+  edgeCaseSvg.includes('clip-path="url(#ill-clip-seq_card)"'),
+  "Compound rounded nodes must clip internal decorations to prevent corner bleed"
+);
+
+const desktopSvg = renderSceneGraphToSvgString(desktopScene);
+assert.ok(
+  desktopSvg.includes('class="ai-ill-callout-link"') &&
+    desktopSvg.includes("<path d=\"M "),
+  "Callout targeting an interior code line must route an orthogonal leader path around the left margin"
+);
+const note1Node = desktopScene.nodes.find((n) => n.id === "callout_line")!;
+const calloutPathMatch = desktopSvg.match(
+  /<g class="ai-ill-callout-link"[^>]*>\s*<path d="M ([0-9.]+) ([0-9.]+)/
+);
+assert.ok(calloutPathMatch, "Callout link path start coordinates must be present");
+const calloutStartX = parseFloat(calloutPathMatch![1]);
+const calloutStartY = parseFloat(calloutPathMatch![2]);
+assert.ok(
+  calloutStartX >= note1Node.x + (note1Node.style.radius || 8) &&
+    calloutStartX <=
+      note1Node.x + note1Node.width - (note1Node.style.radius || 8) &&
+    Math.abs(calloutStartY - (note1Node.y + note1Node.height)) < 0.5,
+  "Callout leader path must start directly on the callout box's flat bottom border, never floating outside its left corner"
+);
+
+// 14. Test Unified Arrow, Line & Junction Geometry Standard
+assert.ok(
+  edgeCaseSvg.includes('refX="2.5"') &&
+    edgeCaseSvg.includes('markerUnits="userSpaceOnUse"') &&
+    edgeCaseSvg.includes("M 0 5 L 3.2 5"),
+  "Arrow marker must use userSpaceOnUse, refX=2.5 at base, and include a solid neck collar for dashed/solid line seams"
+);
+
+// Verify edge shaft pullback: logical edge.points ends at exact target port p2, while pathD pulls back by 7px
+const sampleArrowEdge = yamlScene.edges[0];
+const targetEndPt = sampleArrowEdge.points[sampleArrowEdge.points.length - 1];
+assert.ok(
+  !sampleArrowEdge.pathD.endsWith(`${targetEndPt[0].toFixed(1)} ${targetEndPt[1].toFixed(1)}`),
+  "Arrow edge pathD must pull back its shaft endpoint by 7px so the shaft stops at the arrowhead base while the tip lands on the border"
+);
+
+// Verify sequence diagram junction z-order: start circle dot comes immediately AFTER the message line/path so it caps the lifeline T-junction
+const seqMsgLineIdx = seqCardNode.decorations.findIndex(
+  (d) => d.kind === "line" && d.markerEnd?.startsWith("arrow-")
+);
+assert.ok(seqMsgLineIdx >= 0, "Sequence node must contain arrow message line");
+assert.equal(
+  seqCardNode.decorations[seqMsgLineIdx + 1]?.kind,
+  "circle",
+  "Sequence start activation dot must render after the message line to cleanly cap the lifeline junction"
+);
+
+// 15. Verify all 9 Playground Examples (including the 5 complex architecture & algorithm demos) compile cleanly with zero validation or missing-edge drops
+import fs from "node:fs";
+const playgroundHtml = fs.readFileSync(
+  new URL("../playground/index.html", import.meta.url),
+  "utf8"
+);
+const exStart = playgroundHtml.indexOf("const EXAMPLES = {");
+const exEnd = playgroundHtml.indexOf("const illEl = document.getElementById");
+const exObjCode = playgroundHtml.slice(
+  exStart + "const EXAMPLES = ".length,
+  playgroundHtml.lastIndexOf("};", exEnd) + 1
+);
+const playgroundExamples = new Function(`return (${exObjCode})`)() as Record<
+  string,
+  IllustrationSpec
+>;
+assert.equal(
+  Object.keys(playgroundExamples).length,
+  9,
+  "Playground must contain all 9 showcase examples"
+);
+for (const [exKey, exSpec] of Object.entries(playgroundExamples)) {
+  const check = validateIllustrationSpec(exSpec);
+  assert.ok(check.valid, `Playground example "${exKey}" must pass validation`);
+  for (const compactMode of [false, true]) {
+    const exScene = compileIllustration(check.spec!, lightTheme, {
+      compactViewport: compactMode,
+    });
+    assert.equal(
+      exScene.edges.length,
+      (exSpec.connections || []).length,
+      `Playground example "${exKey}" (compact=${compactMode}) must route 100% of its connections without dropping any sub-anchor`
+    );
+  }
+}
+
+// Verify Demo 6 (browser_url) compact vertical mode separates the two branches below net_seq cleanly
+const browserCompactScene = compileIllustration(
+  playgroundExamples["browser_url"],
+  lightTheme,
+  { compactViewport: true }
+);
+const bDiskCache = browserCompactScene.nodes.find((n) => n.id === "disk_cache")!;
+const bRendererWin = browserCompactScene.nodes.find(
+  (n) => n.id === "renderer_win"
+)!;
+assert.ok(
+  bDiskCache.x + bDiskCache.width < bRendererWin.x,
+  "In compact vertical mode, disk_cache and renderer_win branches below net_seq must fan out side-by-side without vertical occlusion"
+);
+const bEdge1 = browserCompactScene.edges[0];
+const bEdge2 = browserCompactScene.edges[1];
+assert.ok(
+  Math.abs(bEdge1.points[0][0] - bEdge2.points[0][0]) >= 40,
+  "Same-side sub-anchor and parent ports exiting net_seq@bottom must be separated by at least 40px"
+);
+
+// Verify Demo 7 (leetcode_hard) top-most edge-labels layer and staggered parallel Z-bend labels
+const lcScene = compileIllustration(
+  playgroundExamples["leetcode_hard"],
+  lightTheme
+);
+const lcSvg = renderSceneGraphToSvgString(lcScene);
+assert.ok(
+  lcSvg.indexOf('<g class="ai-ill-edges-layer">') > 0 &&
+    lcSvg.indexOf('<g class="ai-ill-edge-labels-layer">') >
+      lcSvg.indexOf('<g class="ai-ill-edges-layer">'),
+  "SVG must separate all edge labels into a dedicated top-most ai-ill-edge-labels-layer above all edge paths and pulse particles"
+);
+const lcLb2 = lcScene.edges[1].labelBox!;
+const lcLb3 = lcScene.edges[2].labelBox!;
+const lcLb4 = lcScene.edges[3].labelBox!;
+assert.ok(
+  lcLb2.x > lcLb3.x &&
+    lcLb3.x > lcLb4.x &&
+    lcLb3.y >= lcLb2.y + lcLb2.height + 16 &&
+    lcLb4.y >= lcLb3.y + lcLb3.height + 16,
+  "Parallel Z-bend labels must stagger diagonally onto unobstructed horizontal arms with clean vertical clearance"
+);
+
+// Verify Demo 8 (android_arch) & Demo 9 (esp32_circuit) compact routing:
+// 1. No collinear overlapping edge segments (track reservation)
+// 2. No edge riding on top of a parent Group border (border-coincidence penalty & stub clearance)
+// 3. Every edge label physically touches its own edge polyline (strict on-polyline label solver)
+const androidCompact = compileIllustration(
+  playgroundExamples["android_arch"],
+  lightTheme,
+  { compactViewport: true }
+);
+const appTierBox = androidCompact.nodes.find((n) => n.id === "app_tier")!;
+const fwTierBox = androidCompact.nodes.find((n) => n.id === "fw_tier")!;
+const relayoutEdge = androidCompact.edges.find(
+  (e) => e.label === "relayoutWindow"
+)!;
+assert.ok(
+  relayoutEdge.points[1][0] >=
+    Math.max(appTierBox.x + appTierBox.width, fwTierBox.x + fwTierBox.width) +
+      10,
+  "android_arch compact relayoutWindow must route cleanly outside app_tier/fw_tier right borders, never overlapping the border"
+);
+
+const espCompact = compileIllustration(
+  playgroundExamples["esp32_circuit"],
+  lightTheme,
+  { compactViewport: true }
+);
+const espEdge6 = espCompact.edges.find((e) => e.label === "I2S1 TTS 播报流")!;
+const espEdge7 = espCompact.edges.find((e) => e.label === "80MHz SPI 帧传输")!;
+const periphBox = espCompact.nodes.find((n) => n.id === "periph_modules")!;
+assert.ok(
+  espEdge6.labelBox &&
+    espEdge6.labelBox.y + espEdge6.labelBox.height <= periphBox.y &&
+    espEdge7.labelBox &&
+    (espEdge7.labelBox.y + espEdge7.labelBox.height <= periphBox.y ||
+      espEdge7.labelBox.y >= periphBox.y + periphBox.height),
+  "esp32_circuit compact detour labels must never cover periph_modules group title bar"
+);
+for (const e of [espEdge6, espEdge7, relayoutEdge]) {
+  const lb = e.labelBox!;
+  const touches = e.points.some((pt, i) => {
+    if (i === e.points.length - 1) return false;
+    const nxt = e.points[i + 1];
+    return (
+      Math.max(pt[0], nxt[0]) >= lb.x &&
+      Math.min(pt[0], nxt[0]) <= lb.x + lb.width &&
+      Math.max(pt[1], nxt[1]) >= lb.y &&
+      Math.min(pt[1], nxt[1]) <= lb.y + lb.height
+    );
+  });
+  assert.ok(
+    touches,
+    `Edge label "${e.label}" must remain strictly anchored on its own edge polyline`
+  );
+}
+
+// Verify Demo 3 (canvas) compact vertical mode does NOT stretch polygon Envoy's bounding box away from its polygonPoints
+const canvasCompact = compileIllustration(
+  playgroundExamples["canvas"],
+  lightTheme,
+  { compactViewport: true }
+);
+const meshWin = canvasCompact.nodes.find((n) => n.id === "mesh_cluster")!;
+const envoyPoly = meshWin.children.find((c) => c.id === "envoy_proxy")!;
+assert.ok(
+  envoyPoly.width <= 120 && envoyPoly.polygonPoints && envoyPoly.polygonPoints.length === 6,
+  "Polygon child inside a column flex window must retain its intrinsic width (never stretched out of sync with polygonPoints)"
+);
+const polyXs = envoyPoly.polygonPoints!.map((p) => p[0]);
+const polyMidX = (Math.min(...polyXs) + Math.max(...polyXs)) / 2;
+assert.ok(
+  Math.abs(polyMidX - envoyPoly.width / 2) <= 2,
+  "Polygon visual center must match its bounding box center so incoming/outgoing arrows anchor cleanly on the hexagon"
+);
+
+console.log("✅ All compiler, layout, sub-anchor, reflow, sketch, remark, P0, P1, P2, boundary, arrow junction standard, and 9 playground showcase tests passed!");

@@ -78,7 +78,7 @@ function renderDecoration(
 
     case "code-line":
     case "table-cell":
-      return `<rect class="ai-ill-subanchor" data-anchor-id="${escapeXml(dec.anchorId || "")}" x="${dec.x}" y="${dec.y}" width="${dec.width || 0}" height="${dec.height || 0}" rx="${dec.rx || 3}" fill="${dec.fill || "transparent"}" />`;
+      return `<rect class="ai-ill-subanchor" data-anchor-id="${escapeXml(dec.anchorId || "")}" x="${dec.x}" y="${dec.y}" width="${dec.width || 0}" height="${dec.height || 0}" rx="${dec.rx ?? (dec.kind === "code-line" ? 3 : 0)}" fill="${dec.fill || "transparent"}" />`;
 
     case "circle":
       return `<circle cx="${dec.x}" cy="${dec.y}" r="${dec.r || 4}" fill="${dec.fill || "none"}" stroke="${dec.stroke || "none"}" />`;
@@ -87,7 +87,10 @@ function renderDecoration(
       const dashAttr = dec.strokeDasharray
         ? ` stroke-dasharray="${dec.strokeDasharray}"`
         : "";
-      if (rough && !dec.strokeDasharray) {
+      const markerEndAttr = dec.markerEnd
+        ? ` marker-end="url(#ill-marker-${dec.markerEnd})"`
+        : "";
+      if (rough && !dec.strokeDasharray && !dec.markerEnd) {
         const d = generateRoughLinePath(
           dec.x,
           dec.y,
@@ -98,7 +101,18 @@ function renderDecoration(
         );
         return `<path d="${d}" fill="none" stroke="${dec.stroke || "currentColor"}" stroke-width="${dec.strokeWidth || 1}" />`;
       }
-      return `<line x1="${dec.x}" y1="${dec.y}" x2="${dec.x2 ?? dec.x}" y2="${dec.y2 ?? dec.y}" stroke="${dec.stroke || "currentColor"}" stroke-width="${dec.strokeWidth || 1}"${dashAttr} />`;
+      const linecapAttr = dec.markerEnd ? ` stroke-linecap="round"` : "";
+      return `<line x1="${dec.x}" y1="${dec.y}" x2="${dec.x2 ?? dec.x}" y2="${dec.y2 ?? dec.y}" stroke="${dec.stroke || "currentColor"}" stroke-width="${dec.strokeWidth || 1}"${linecapAttr}${dashAttr}${markerEndAttr} />`;
+    }
+
+    case "path": {
+      const dashAttr = dec.strokeDasharray
+        ? ` stroke-dasharray="${dec.strokeDasharray}"`
+        : "";
+      const markerEndAttr = dec.markerEnd
+        ? ` marker-end="url(#ill-marker-${dec.markerEnd})"`
+        : "";
+      return `<path d="${dec.d || ""}" fill="${dec.fill || "none"}" stroke="${dec.stroke || "currentColor"}" stroke-width="${dec.strokeWidth || 1.5}" stroke-linecap="round" stroke-linejoin="round"${dashAttr}${markerEndAttr} />`;
     }
 
     case "icon":
@@ -261,20 +275,69 @@ function renderCalloutConnector(
   if (!node.calloutTail) return "";
   const targetBox = anchorRegistry[node.calloutTail.targetId];
   if (!targetBox) return "";
+  const ownerBox =
+    targetBox.ownerNodeId && anchorRegistry[targetBox.ownerNodeId]
+      ? anchorRegistry[targetBox.ownerNodeId]
+      : targetBox;
+  const side = node.calloutTail.side;
 
-  const startX = node.x + node.width / 2;
+  // When a top/bottom callout targets an interior sub-anchor (e.g. mdx_source.line_2),
+  // route around the left edge of ownerBox so the leader line never strikes through header/code text.
+  if (
+    (side === "top" && targetBox.y > ownerBox.y + 4) ||
+    (side === "bottom" &&
+      targetBox.y + targetBox.height < ownerBox.y + ownerBox.height - 4)
+  ) {
+    const startY = side === "top" ? node.y + node.height : node.y;
+    const r = node.style.radius || 8;
+    const minFlatBottomX = node.x + r + 4;
+    const maxFlatBottomX = node.x + node.width - r - 4;
+    const gutterX = Math.max(8, ownerBox.x - 12);
+    const endX = ownerBox.x;
+    const endY = targetBox.y + targetBox.height / 2;
+    const cornerR = 4;
+    const vDir = endY >= startY ? 1 : -1;
+
+    let d: string;
+    if (gutterX >= minFlatBottomX && gutterX <= maxFlatBottomX) {
+      // Gutter sits directly beneath/above the callout's flat horizontal border: 1-bend rounded L-path
+      d = `M ${gutterX.toFixed(1)} ${startY.toFixed(1)} L ${gutterX.toFixed(1)} ${(endY - vDir * cornerR).toFixed(1)} Q ${gutterX.toFixed(1)} ${endY.toFixed(1)} ${(gutterX + cornerR).toFixed(1)} ${endY.toFixed(1)} L ${endX.toFixed(1)} ${endY.toFixed(1)}`;
+    } else {
+      // Fallback when callout is positioned to the right of gutterX: exit flush from callout's left vertical border
+      const attachY = node.y + node.height / 2;
+      const effGutterX = Math.max(8, Math.min(node.x, ownerBox.x) - 12);
+      const vDir2 = endY >= attachY ? 1 : -1;
+      d = `M ${node.x.toFixed(1)} ${attachY.toFixed(1)} L ${(effGutterX + cornerR).toFixed(1)} ${attachY.toFixed(1)} Q ${effGutterX.toFixed(1)} ${attachY.toFixed(1)} ${effGutterX.toFixed(1)} ${(attachY + vDir2 * cornerR).toFixed(1)} L ${effGutterX.toFixed(1)} ${(endY - vDir2 * cornerR).toFixed(1)} Q ${effGutterX.toFixed(1)} ${endY.toFixed(1)} ${(effGutterX + cornerR).toFixed(1)} ${endY.toFixed(1)} L ${endX.toFixed(1)} ${endY.toFixed(1)}`;
+    }
+    return `<g class="ai-ill-callout-link" data-node-id="${escapeXml(node.id)}">
+    <path d="${d}" fill="none" stroke="${node.style.stroke}" stroke-width="1.5" stroke-dasharray="3 3" stroke-linejoin="round" />
+    <circle cx="${endX.toFixed(1)}" cy="${endY.toFixed(1)}" r="3.5" fill="${node.style.stroke}" />
+  </g>`;
+  }
+
+  const startX =
+    side === "left"
+      ? node.x + node.width
+      : side === "right"
+      ? node.x
+      : node.x + node.width / 2;
   const startY =
-    node.calloutTail.side === "top"
+    side === "top"
       ? node.y + node.height
-      : node.calloutTail.side === "bottom"
+      : side === "bottom"
       ? node.y
       : node.y + node.height / 2;
 
-  const endX = targetBox.x + targetBox.width / 2;
+  const endX =
+    side === "left"
+      ? targetBox.x
+      : side === "right"
+      ? targetBox.x + targetBox.width
+      : targetBox.x + targetBox.width / 2;
   const endY =
-    node.calloutTail.side === "top"
+    side === "top"
       ? targetBox.y
-      : node.calloutTail.side === "bottom"
+      : side === "bottom"
       ? targetBox.y + targetBox.height
       : targetBox.y + targetBox.height / 2;
 
@@ -289,7 +352,6 @@ function renderSceneNodeTree(
   roughness: number,
   anchorRegistry: Record<string, BoundingBox>
 ): string {
-  const shapeSvg = renderNodeShape(node, roughness);
   const decsSvg = node.decorations
     .map((dec, idx) =>
       renderDecoration(dec, node.style.rough, node.id, idx, roughness)
@@ -303,10 +365,64 @@ function renderSceneNodeTree(
 
   const calloutLink = renderCalloutConnector(node, anchorRegistry);
 
+  const { width: w, height: h, style, shape } = node;
+  if (
+    shape === "rect" &&
+    style.variant !== "ghost" &&
+    node.decorations.length > 0 &&
+    style.radius > 0
+  ) {
+    const clipId = `ill-clip-${escapeXml(node.id)}`;
+    const r = style.rough ? Math.min(style.radius, 6) : style.radius;
+    const dashAttr = style.strokeDasharray
+      ? ` stroke-dasharray="${style.strokeDasharray}"`
+      : "";
+    const filterAttr =
+      style.elevation === "md"
+        ? ` filter="url(#ill-shadow-md)"`
+        : style.elevation === "sm"
+        ? ` filter="url(#ill-shadow-sm)"`
+        : "";
+
+    const bgSvg = style.rough
+      ? `<rect x="1" y="1" width="${w - 2}" height="${h - 2}" rx="${r}" fill="${style.fill}" stroke="none"${filterAttr} />`
+      : `<rect x="0" y="0" width="${w}" height="${h}" rx="${r}" fill="${style.fill}" stroke="none"${filterAttr} />`;
+
+    const borderSvg = style.rough
+      ? `<path d="${generateRoughRectStrokePath(0, 0, w, h, node.id, roughness)}" fill="none" stroke="${style.stroke}" stroke-width="${style.strokeWidth}"${dashAttr} />`
+      : `<rect x="0" y="0" width="${w}" height="${h}" rx="${r}" fill="none" stroke="${style.stroke}" stroke-width="${style.strokeWidth}"${dashAttr} />`;
+
+    return `${calloutLink}<g class="ai-ill-node" data-node-id="${escapeXml(node.id)}" data-node-type="${node.type}" transform="translate(${node.x.toFixed(1)}, ${node.y.toFixed(1)})" opacity="${style.opacity}">
+    <clipPath id="${clipId}"><rect x="0" y="0" width="${w}" height="${h}" rx="${r}" /></clipPath>
+    ${bgSvg}
+    <g clip-path="url(#${clipId})">${decsSvg}</g>
+    ${borderSvg}
+  </g>${childrenSvg}`;
+  }
+
+  const shapeSvg = renderNodeShape(node, roughness);
+
   return `${calloutLink}<g class="ai-ill-node" data-node-id="${escapeXml(node.id)}" data-node-type="${node.type}" transform="translate(${node.x.toFixed(1)}, ${node.y.toFixed(1)})" opacity="${node.style.opacity}">
     ${shapeSvg}
     ${decsSvg}
   </g>${childrenSvg}`;
+}
+
+function buildTrimmedHaloPathD(edge: SceneEdge): string | null {
+  if (edge.points.length < 3 || !edge.pathD.startsWith("M ")) return null;
+  const p0 = edge.points[0];
+  const p1 = edge.points[1];
+  const dx = p1[0] - p0[0];
+  const dy = p1[1] - p0[1];
+  const len = Math.hypot(dx, dy);
+  if (len <= 10) return null;
+  const trim = Math.min(6, len * 0.35);
+  const nx = p0[0] + (dx / len) * trim;
+  const ny = p0[1] + (dy / len) * trim;
+  return edge.pathD.replace(
+    /^M\s+[-0-9.]+\s+[-0-9.]+/,
+    `M ${nx.toFixed(1)} ${ny.toFixed(1)}`
+  );
 }
 
 function renderEdge(edge: SceneEdge, scene: SceneGraph): string {
@@ -326,8 +442,23 @@ function renderEdge(edge: SceneEdge, scene: SceneGraph): string {
 
   let roughCompanionSvg = "";
   if (scene.preset === "sketch" && edge.points.length >= 2) {
+    const companionPts = edge.points.map(
+      (pt) => [pt[0], pt[1]] as [number, number]
+    );
+    if (edge.endMarker === "arrow" && companionPts.length >= 2) {
+      const last = companionPts[companionPts.length - 1];
+      const prev = companionPts[companionPts.length - 2];
+      const dx = last[0] - prev[0];
+      const dy = last[1] - prev[1];
+      const len = Math.hypot(dx, dy);
+      if (len > 4) {
+        const pull = Math.min(7.7, len * 0.45);
+        last[0] -= (dx / len) * pull;
+        last[1] -= (dy / len) * pull;
+      }
+    }
     const companionD = generateRoughEdgeCompanionPath(
-      edge.points,
+      companionPts,
       `${edge.id}_rough`,
       scene.theme.geometry.roughness
     );
@@ -353,27 +484,38 @@ function renderEdge(edge: SceneEdge, scene: SceneGraph): string {
     }
   }
 
-  let labelSvg = "";
-  if (edge.label && edge.labelBox) {
-    const lb = edge.labelBox;
-    const labelStroke =
-      edge.tone === "neutral"
-        ? scene.theme.colors.border
-        : scene.theme.colors.tones[edge.tone].softBorder;
-    const labelRx = scene.preset === "blueprint" ? 3 : 11;
-    labelSvg = `<g class="ai-ill-edge-label">
-      <rect x="${lb.x.toFixed(1)}" y="${lb.y.toFixed(1)}" width="${lb.width.toFixed(1)}" height="${lb.height.toFixed(1)}" rx="${labelRx}" fill="${scene.theme.colors.surfaceElevated}" stroke="${labelStroke}" stroke-width="1" filter="url(#ill-shadow-sm)" />
-      <text x="${(lb.x + lb.width / 2).toFixed(1)}" y="${(lb.y + lb.height / 2 + 3.8).toFixed(1)}" fill="${edge.tone === "neutral" ? scene.theme.colors.textMuted : edge.stroke}" font-family="${escapeXml(scene.theme.typography.fontSans)}" font-size="11px" font-weight="600" text-anchor="middle">${escapeXml(edge.label)}</text>
-    </g>`;
-  }
+  // Subtle background-colored bridge halo underneath multi-segment paths so crossings remain legible
+  const haloD =
+    scene.background !== "transparent" ? buildTrimmedHaloPathD(edge) : null;
+  const haloColor =
+    scene.background === "surface"
+      ? scene.theme.colors.surface
+      : scene.theme.colors.bg;
+  const bridgeHaloSvg = haloD
+    ? `<path class="ai-ill-edge-halo" d="${haloD}" fill="none" stroke="${haloColor}" stroke-width="${(edge.strokeWidth + 3.0).toFixed(2)}" stroke-linecap="butt" stroke-linejoin="round" opacity="0.88" />`
+    : "";
 
   return `<g class="ai-ill-edge" data-edge-id="${escapeXml(edge.id)}" data-from="${escapeXml(edge.from)}" data-to="${escapeXml(edge.to)}">
     <!-- Invisible wider hit target for easy hover -->
     <path d="${edge.pathD}" fill="none" stroke="transparent" stroke-width="14" />
+    ${bridgeHaloSvg}
     ${roughCompanionSvg}
     <path class="ai-ill-edge-path${flowClass}" d="${edge.pathD}" fill="none" stroke="${edge.stroke}" stroke-width="${edge.strokeWidth}" stroke-linecap="round" stroke-linejoin="round"${dashAttr}${markerStart}${markerEnd} />
     ${pulseParticles}
-    ${labelSvg}
+  </g>`;
+}
+
+function renderEdgeLabel(edge: SceneEdge, scene: SceneGraph): string {
+  if (!edge.label || !edge.labelBox) return "";
+  const lb = edge.labelBox;
+  const labelStroke =
+    edge.tone === "neutral"
+      ? scene.theme.colors.border
+      : scene.theme.colors.tones[edge.tone].softBorder;
+  const labelRx = scene.preset === "blueprint" ? 3 : 11;
+  return `<g class="ai-ill-edge-label" data-edge-id="${escapeXml(edge.id)}" data-from="${escapeXml(edge.from)}" data-to="${escapeXml(edge.to)}">
+    <rect x="${lb.x.toFixed(1)}" y="${lb.y.toFixed(1)}" width="${lb.width.toFixed(1)}" height="${lb.height.toFixed(1)}" rx="${labelRx}" fill="${scene.theme.colors.surfaceElevated}" stroke="${labelStroke}" stroke-width="1" filter="url(#ill-shadow-sm)" />
+    <text x="${(lb.x + lb.width / 2).toFixed(1)}" y="${(lb.y + lb.height / 2 + 3.8).toFixed(1)}" fill="${edge.tone === "neutral" ? scene.theme.colors.textMuted : edge.stroke}" font-family="${escapeXml(scene.theme.typography.fontSans)}" font-size="11px" font-weight="600" text-anchor="middle">${escapeXml(edge.label)}</text>
   </g>`;
 }
 
@@ -388,8 +530,9 @@ export function renderSceneGraphToSvgString(scene: SceneGraph): string {
           ? theme.colors.textMuted
           : theme.colors.tones[tone].main;
       return `
-        <marker id="ill-marker-arrow-${tone}" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
-          <path d="M 1 1.8 L 9 5 L 1 8.2 z" fill="${col}" />
+        <marker id="ill-marker-arrow-${tone}" viewBox="0 0 10 10" refX="2.5" refY="5" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" orient="auto-start-reverse">
+          <path d="M 0 5 L 3.2 5" stroke="${col}" stroke-width="1.75" stroke-linecap="round" />
+          <path d="M 1.4 1.6 L 9.5 5 L 1.4 8.4 L 2.7 5 z" fill="${col}" />
         </marker>
         <marker id="ill-marker-dot-${tone}" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="5" markerHeight="5">
           <circle cx="5" cy="5" r="3.5" fill="${col}" />
@@ -434,6 +577,10 @@ export function renderSceneGraphToSvgString(scene: SceneGraph): string {
     .join("\n");
 
   const edgesSvg = scene.edges.map((e) => renderEdge(e, scene)).join("\n");
+  const edgeLabelsSvg = scene.edges
+    .map((e) => renderEdgeLabel(e, scene))
+    .filter(Boolean)
+    .join("\n");
 
   return `<svg class="ai-ill-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="100%" style="max-width: ${width}px; height: auto; display: block; margin: 0 auto;" role="img" aria-label="${escapeXml(scene.title || "Technical Illustration")}">
   ${scene.title ? `<title>${escapeXml(scene.title)}</title>` : ""}
@@ -461,10 +608,10 @@ export function renderSceneGraphToSvgString(scene: SceneGraph): string {
     .ai-ill-edge-flow {
       animation: ill-dash-march 0.9s linear infinite;
     }
-    .ai-ill-node, .ai-ill-edge, .ai-ill-subanchor, .ai-ill-callout-link {
+    .ai-ill-node, .ai-ill-edge, .ai-ill-edge-label, .ai-ill-subanchor, .ai-ill-callout-link {
       transition: opacity 0.18s ease, filter 0.18s ease, stroke-width 0.18s ease;
     }
-    .ai-ill-node {
+    .ai-ill-node, .ai-ill-edge-label {
       cursor: pointer;
     }
     .ai-ill-subanchor {
@@ -472,12 +619,16 @@ export function renderSceneGraphToSvgString(scene: SceneGraph): string {
     }
     .ai-ill-svg.has-focus .ai-ill-node.is-dimmed,
     .ai-ill-svg.has-focus .ai-ill-edge.is-dimmed,
+    .ai-ill-svg.has-focus .ai-ill-edge-label.is-dimmed,
     .ai-ill-svg.has-focus .ai-ill-callout-link.is-dimmed {
       opacity: 0.2;
       filter: grayscale(35%);
     }
     .ai-ill-svg.has-focus .ai-ill-edge.is-active .ai-ill-edge-path {
       stroke-width: 2.8px;
+    }
+    .ai-ill-svg.has-focus .ai-ill-edge-label.is-active rect {
+      stroke-width: 1.6px;
     }
     .ai-ill-svg.has-focus .ai-ill-subanchor.is-active {
       stroke: ${theme.colors.tones.primary.main};
@@ -487,5 +638,6 @@ export function renderSceneGraphToSvgString(scene: SceneGraph): string {
   <g class="ai-ill-bg-layer">${bgRectSvg}</g>
   <g class="ai-ill-nodes-layer">${nodesSvg}</g>
   <g class="ai-ill-edges-layer">${edgesSvg}</g>
+  <g class="ai-ill-edge-labels-layer">${edgeLabelsSvg}</g>
 </svg>`;
 }

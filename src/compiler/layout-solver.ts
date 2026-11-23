@@ -239,11 +239,21 @@ export class HybridLayoutSolver {
 
       if (targetBox && ownerBox) {
         const gap = 18;
+        const isInteriorSubAnchor =
+          (side === "top" && targetBox.y > ownerBox.y + 4) ||
+          (side === "bottom" &&
+            targetBox.y + targetBox.height < ownerBox.y + ownerBox.height - 4);
         if (side === "top") {
-          cNode.x = targetBox.x + (targetBox.width - cNode.width) / 2;
+          const centeredX = targetBox.x + (targetBox.width - cNode.width) / 2;
+          cNode.x = isInteriorSubAnchor
+            ? Math.min(centeredX, ownerBox.x - 24)
+            : centeredX;
           cNode.y = Math.min(targetBox.y, ownerBox.y) - cNode.height - gap;
         } else if (side === "bottom") {
-          cNode.x = targetBox.x + (targetBox.width - cNode.width) / 2;
+          const centeredX = targetBox.x + (targetBox.width - cNode.width) / 2;
+          cNode.x = isInteriorSubAnchor
+            ? Math.min(centeredX, ownerBox.x - 24)
+            : centeredX;
           cNode.y =
             Math.max(
               targetBox.y + targetBox.height,
@@ -390,34 +400,48 @@ export class HybridLayoutSolver {
   }
 
   private measureElement(spec: ElementSpec, compact: boolean): SceneNode {
+    let node: SceneNode;
     switch (spec.type) {
       case "card":
-        return this.buildCardNode(spec, compact);
+        node = this.buildCardNode(spec, compact);
+        break;
       case "code-block":
-        return this.buildCodeBlockNode(spec);
+        node = this.buildCodeBlockNode(spec);
+        break;
       case "terminal":
-        return this.buildTerminalNode(spec);
+        node = this.buildTerminalNode(spec);
+        break;
       case "table":
-        return this.buildTableNode(spec);
+        node = this.buildTableNode(spec);
+        break;
       case "group":
       case "window":
-        return this.buildGroupOrWindowNode(spec, compact);
+        node = this.buildGroupOrWindowNode(spec, compact);
+        break;
       case "callout":
-        return this.buildCalloutNode(spec);
+        node = this.buildCalloutNode(spec);
+        break;
       case "badge":
-        return this.buildBadgeNode(spec);
+        node = this.buildBadgeNode(spec);
+        break;
       case "text":
-        return this.buildTextNode(spec);
+        node = this.buildTextNode(spec);
+        break;
       case "icon":
-        return this.buildIconNode(spec);
+        node = this.buildIconNode(spec);
+        break;
       case "polygon":
-        return this.buildPolygonNode(spec);
+        node = this.buildPolygonNode(spec);
+        break;
       case "path":
-        return this.buildPathNode(spec);
+        node = this.buildPathNode(spec);
+        break;
       case "bitfield":
-        return this.buildBitfieldNode(spec);
+        node = this.buildBitfieldNode(spec);
+        break;
       case "sequence":
-        return this.buildSequenceNode(spec);
+        node = this.buildSequenceNode(spec);
+        break;
       case "rect":
       case "circle":
       case "ellipse":
@@ -425,7 +449,98 @@ export class HybridLayoutSolver {
       case "cylinder":
       case "queue":
       default:
-        return this.buildPrimitiveShapeNode(spec as RectElementSpec);
+        node = this.buildPrimitiveShapeNode(spec as RectElementSpec);
+        break;
+    }
+
+    this.enforceNodeDecorationBounds(node, spec);
+    return node;
+  }
+
+  /**
+   * Universal boundary guard: verifies that every internal decoration (text, line, rect, circle, icon)
+   * fits inside [0, node.width] x [0, node.height] with safe margin, auto-expanding auto-sized nodes
+   * and stretching full-bleed header bars/dividers if any internal element would overflow.
+   */
+  private enforceNodeDecorationBounds(
+    node: SceneNode,
+    spec: ElementSpec
+  ): void {
+    if (node.shape === "none" || node.decorations.length === 0) return;
+
+    const oldW = node.width;
+    const oldH = node.height;
+    let reqW = oldW;
+    let reqH = oldH;
+    const rightPad = node.type === "text" || node.type === "badge" ? 4 : 8;
+    const bottomPad = node.type === "text" || node.type === "badge" ? 4 : 8;
+
+    for (const d of node.decorations) {
+      if (d.kind === "text" && d.text) {
+        const tw = this.measurer.measureLineWidth(
+          d.text,
+          d.fontSize || 12,
+          d.fontFamily || this.theme.typography.fontSans,
+          d.fontWeight || 400
+        );
+        if (d.textAnchor === "end") {
+          // Right-aligned text already has its right anchor at d.x (extending left to d.x - tw)
+          reqW = Math.max(reqW, Math.ceil(d.x));
+        } else if (d.textAnchor === "middle") {
+          reqW = Math.max(reqW, Math.ceil(d.x + tw / 2 + rightPad));
+        } else {
+          reqW = Math.max(reqW, Math.ceil(d.x + tw + rightPad));
+        }
+        reqH = Math.max(reqH, Math.ceil(d.y + bottomPad));
+      } else if (d.kind === "rect" || d.kind === "table-cell" || d.kind === "code-line") {
+        reqW = Math.max(reqW, Math.ceil(d.x + (d.width || 0)));
+        reqH = Math.max(reqH, Math.ceil(d.y + (d.height || 0)));
+      } else if (d.kind === "line") {
+        reqW = Math.max(reqW, Math.ceil(Math.max(d.x, d.x2 ?? d.x)));
+        reqH = Math.max(reqH, Math.ceil(Math.max(d.y, d.y2 ?? d.y)));
+      } else if (d.kind === "circle") {
+        const r = d.r || 4;
+        reqW = Math.max(reqW, Math.ceil(d.x + r + 8));
+        reqH = Math.max(reqH, Math.ceil(d.y + r + 8));
+      }
+    }
+
+    if (typeof spec.width !== "number" && reqW > oldW) {
+      const deltaW = reqW - oldW;
+      node.width = reqW;
+      for (const d of node.decorations) {
+        if (d.kind === "line" && d.x === 0 && d.x2 === oldW) {
+          d.x2 = reqW;
+        } else if (
+          (d.kind === "rect" || d.kind === "code-line") &&
+          d.x <= 2 &&
+          d.width !== undefined &&
+          Math.abs(d.width - (oldW - d.x * 2)) <= 2
+        ) {
+          d.width = reqW - d.x * 2;
+        } else if (
+          d.kind === "table-cell" &&
+          d.width !== undefined &&
+          Math.abs(d.x + d.width - oldW) <= 2
+        ) {
+          d.width += deltaW;
+        } else if (
+          d.kind === "text" &&
+          d.textAnchor === "end" &&
+          d.x >= oldW - 20
+        ) {
+          d.x += deltaW;
+        }
+      }
+      for (const sub of node.subAnchors) {
+        if (Math.abs(sub.x + sub.width - oldW) <= 2) {
+          sub.width += deltaW;
+        }
+      }
+    }
+
+    if (typeof spec.height !== "number" && reqH > oldH) {
+      node.height = reqH;
     }
   }
 
@@ -487,8 +602,13 @@ export class HybridLayoutSolver {
       childrenHeight = box.height;
     }
 
+    const subtitleWidth = spec.subtitle
+      ? this.measurer.measureLineWidth(spec.subtitle, 11, fontMono, 400, true)
+      : 0;
+
     const contentWidth = Math.max(
       headerRowWidth,
+      subtitleWidth,
       bodyBlock ? bodyBlock.width : 0,
       childrenWidth,
       150
@@ -660,10 +780,28 @@ export class HybridLayoutSolver {
       maxCodeLineW = Math.max(maxCodeLineW, w);
     }
 
+    const headerTitleW = spec.title
+      ? this.measurer.measureLineWidth(spec.title, 11, fontMono, 600, true)
+      : 0;
+    const headerLangW = spec.lang
+      ? this.measurer.measureLineWidth(
+          spec.lang.toUpperCase(),
+          10,
+          fontMono,
+          600,
+          true
+        )
+      : 0;
+    const headerMinW =
+      62 + headerTitleW + (headerLangW > 0 ? headerLangW + 28 : 20);
+
     const width =
       typeof spec.width === "number"
         ? spec.width
-        : Math.ceil(padX * 2 + gutterWidth + maxCodeLineW + 18);
+        : Math.max(
+            Math.ceil(padX * 2 + gutterWidth + maxCodeLineW + 18),
+            Math.ceil(headerMinW)
+          );
     const height =
       typeof spec.height === "number"
         ? spec.height
@@ -849,10 +987,22 @@ export class HybridLayoutSolver {
       );
     }
 
+    const termTitleW = this.measurer.measureLineWidth(
+      spec.title || "bash",
+      11,
+      fontMono,
+      400,
+      true
+    );
+    const termHeaderMinW = 60 * 2 + termTitleW;
+
     const width =
       typeof spec.width === "number"
         ? spec.width
-        : Math.ceil(maxLineW + padX * 2 + 24);
+        : Math.max(
+            Math.ceil(maxLineW + padX * 2 + 24),
+            Math.ceil(termHeaderMinW)
+          );
     const height =
       typeof spec.height === "number"
         ? spec.height
@@ -1029,7 +1179,19 @@ export class HybridLayoutSolver {
       });
     });
 
-    const totalWidth = colWidths.reduce((acc, w) => acc + w, 0);
+    const titleMinW = spec.title
+      ? this.measurer.measureLineWidth(spec.title, 12, fontSans, 600) +
+        cellPadX * 2 +
+        12
+      : 0;
+    let totalWidth = colWidths.reduce((acc, w) => acc + w, 0);
+    if (titleMinW > totalWidth && colCount > 0) {
+      const extraPerCol = Math.ceil((titleMinW - totalWidth) / colCount);
+      for (let i = 0; i < colCount; i++) {
+        colWidths[i] += extraPerCol;
+      }
+      totalWidth = colWidths.reduce((acc, w) => acc + w, 0);
+    }
     const totalHeight =
       titleBarHeight + headerHeight + rows.length * rowHeight;
 
@@ -1042,11 +1204,11 @@ export class HybridLayoutSolver {
     if (spec.title) {
       decorations.push({
         kind: "rect",
-        x: 1,
-        y: 1,
-        width: totalWidth - 2,
+        x: 0,
+        y: 0,
+        width: totalWidth,
         height: titleBarHeight,
-        rx: Math.max(0, style.radius - 1),
+        rx: 0,
         fill: tonePalette.softBg,
       });
       decorations.push({
@@ -1075,10 +1237,11 @@ export class HybridLayoutSolver {
       let colX = 0;
       decorations.push({
         kind: "rect",
-        x: 1,
-        y: cursorY + 1,
-        width: totalWidth - 2,
-        height: headerHeight - 1,
+        x: 0,
+        y: cursorY,
+        width: totalWidth,
+        height: headerHeight,
+        rx: 0,
         fill: this.theme.colors.surface,
       });
       headers.forEach((h, colIdx) => {
@@ -1111,18 +1274,6 @@ export class HybridLayoutSolver {
       let colX = 0;
       const rowY = cursorY + rIdx * rowHeight;
 
-      if (rIdx > 0) {
-        decorations.push({
-          kind: "line",
-          x: 0,
-          y: rowY,
-          x2: totalWidth,
-          y2: rowY,
-          stroke: this.theme.colors.border,
-          strokeWidth: 1,
-        });
-      }
-
       for (let cIdx = 0; cIdx < colCount; cIdx++) {
         const cw = colWidths[cIdx];
         const cell = row[cIdx] ?? "";
@@ -1144,10 +1295,11 @@ export class HybridLayoutSolver {
         decorations.push({
           kind: "table-cell",
           anchorId,
-          x: colX + 1,
-          y: rowY + 1,
-          width: cw - 2,
-          height: rowHeight - 2,
+          x: colX,
+          y: rowY,
+          width: cw,
+          height: rowHeight,
+          rx: 0,
           fill: cellTone
             ? this.theme.colors.tones[cellTone].softBg
             : "transparent",
@@ -1179,6 +1331,18 @@ export class HybridLayoutSolver {
         });
 
         colX += cw;
+      }
+
+      if (rIdx > 0) {
+        decorations.push({
+          kind: "line",
+          x: 0,
+          y: rowY,
+          x2: totalWidth,
+          y2: rowY,
+          stroke: this.theme.colors.border,
+          strokeWidth: 1,
+        });
       }
     });
 
@@ -1230,14 +1394,31 @@ export class HybridLayoutSolver {
       compact
     );
 
-    const titleWidth = spec.title
-      ? this.measurer.measureLineWidth(
-          spec.title,
-          12.5,
-          this.theme.typography.fontSans,
-          600
-        ) + 40
-      : 0;
+    const windowBarText = spec.url || spec.title || "";
+    const windowUrlTextW =
+      spec.type === "window" && windowBarText
+        ? this.measurer.measureLineWidth(
+            windowBarText,
+            11,
+            this.theme.typography.fontMono,
+            400,
+            true
+          )
+        : 0;
+
+    const titleWidth =
+      spec.type === "window"
+        ? windowUrlTextW > 0
+          ? windowUrlTextW + 136
+          : 0
+        : spec.title
+        ? this.measurer.measureLineWidth(
+            spec.title,
+            12.5,
+            this.theme.typography.fontSans,
+            600
+          ) + 40
+        : 0;
 
     const width =
       typeof spec.width === "number"
@@ -1278,8 +1459,11 @@ export class HybridLayoutSolver {
           fill: col,
         });
       });
-      if (spec.url || spec.title) {
-        const barW = Math.min(width - 110, 260);
+      if (windowBarText) {
+        const barW = Math.max(
+          windowUrlTextW + 24,
+          Math.min(width - 110, 260)
+        );
         const barX = (width - barW) / 2;
         decorations.push({
           kind: "rect",
@@ -1621,7 +1805,7 @@ export class HybridLayoutSolver {
       }
       const spanX = Math.max(1e-3, maxPx - minPx);
       const spanY = Math.max(1e-3, maxPy - minPy);
-      const pad = 2;
+      const pad = 0;
       points = rawPts.map(([px, py]) => [
         Math.round(pad + ((px - minPx) / spanX) * (width - pad * 2)),
         Math.round(pad + ((py - minPy) / spanY) * (height - pad * 2)),
@@ -1732,7 +1916,33 @@ export class HybridLayoutSolver {
       fieldWidths.push(Math.ceil(propW));
     }
 
-    const rawTotalW = Math.max(180, fieldWidths.reduce((a, b) => a + b, 0));
+    const headerTitleW = spec.title
+      ? this.measurer.measureLineWidth(spec.title, 12, fontSans, 600)
+      : 0;
+    const headerBitsW = spec.totalBits
+      ? this.measurer.measureLineWidth(
+          `${spec.totalBits}-bit`,
+          10.5,
+          fontMono,
+          600,
+          true
+        ) + 18
+      : 0;
+    const headerMinW = Math.ceil(headerTitleW + headerBitsW + padX * 2 + 12);
+
+    let sumFieldsW = fieldWidths.reduce((a, b) => a + b, 0);
+    const targetMinW = Math.max(180, headerMinW);
+    if (sumFieldsW < targetMinW && fieldWidths.length > 0) {
+      const extraPerField = Math.ceil(
+        (targetMinW - sumFieldsW) / fieldWidths.length
+      );
+      for (let i = 0; i < fieldWidths.length; i++) {
+        fieldWidths[i] += extraPerField;
+      }
+      sumFieldsW = fieldWidths.reduce((a, b) => a + b, 0);
+    }
+
+    const rawTotalW = Math.max(targetMinW, sumFieldsW);
     const width = typeof spec.width === "number" ? spec.width : rawTotalW;
     const height =
       typeof spec.height === "number"
@@ -1748,11 +1958,11 @@ export class HybridLayoutSolver {
     if (spec.title) {
       decorations.push({
         kind: "rect",
-        x: 1,
-        y: 1,
-        width: width - 2,
+        x: 0,
+        y: 0,
+        width,
         height: titleBarHeight,
-        rx: Math.max(0, style.radius - 1),
+        rx: 0,
         fill: tonePalette.softBg,
       });
       decorations.push({
@@ -1790,13 +2000,14 @@ export class HybridLayoutSolver {
       cursorY += titleBarHeight;
     }
 
-    // Bit offset ruler strip
+    // Bit offset ruler strip (full-bleed)
     decorations.push({
       kind: "rect",
-      x: 1,
-      y: cursorY + 1,
-      width: width - 2,
-      height: rulerHeight - 1,
+      x: 0,
+      y: cursorY,
+      width,
+      height: rulerHeight,
+      rx: 0,
       fill: this.theme.colors.surface,
     });
     decorations.push({
@@ -1857,14 +2068,15 @@ export class HybridLayoutSolver {
         });
       }
 
-      // Field background cell
+      // Field background cell (full-bleed edge-to-edge fill)
       decorations.push({
         kind: "table-cell",
         anchorId,
-        x: colX + 1,
-        y: cellY + 1,
-        width: fw - 2,
-        height: cellHeight - 2,
+        x: colX,
+        y: cellY,
+        width: fw,
+        height: cellHeight,
+        rx: 0,
         fill: f.tone ? fPalette.softBg : "transparent",
       });
 
@@ -1961,15 +2173,29 @@ export class HybridLayoutSolver {
     const actorIndexById = new Map<string, number>();
     actors.forEach((a, idx) => actorIndexById.set(a.id, idx));
 
+    const selfLoopW = 32;
+    const selfLoopH = 16;
     const colGaps = new Array<number>(Math.max(0, actors.length - 1)).fill(120);
     for (const msg of messages) {
       const i1 = actorIndexById.get(msg.from) ?? 0;
       const i2 = actorIndexById.get(msg.to) ?? 0;
-      const lw =
-        this.measurer.measureLineWidth(msg.label, 11, fontSans, 600) + 44;
-      if (Math.abs(i2 - i1) === 1) {
+      const spanCols = Math.abs(i2 - i1);
+      if (spanCols >= 1) {
+        const lw =
+          this.measurer.measureLineWidth(msg.label, 11, fontSans, 600) + 48;
         const minIdx = Math.min(i1, i2);
-        colGaps[minIdx] = Math.max(colGaps[minIdx], lw);
+        const perColReq = Math.ceil(lw / spanCols);
+        for (let c = 0; c < spanCols; c++) {
+          colGaps[minIdx + c] = Math.max(colGaps[minIdx + c], perColReq);
+        }
+      } else if (i1 === i2 && actors.length > 1) {
+        // Self-call on an actor: ensure the adjacent corridor (inward for rightmost actor) has room for loop + label
+        const lw =
+          this.measurer.measureLineWidth(msg.label, 11, fontSans, 600) +
+          selfLoopW +
+          44;
+        const gapIdx = i1 === actors.length - 1 ? i1 - 1 : i1;
+        colGaps[gapIdx] = Math.max(colGaps[gapIdx], lw);
       }
     }
 
@@ -1989,11 +2215,43 @@ export class HybridLayoutSolver {
 
     const lastActorHalf =
       actors.length > 0 ? actorWidths[actors.length - 1] / 2 : 60;
-    const totalW = Math.max(240, Math.ceil(cursorX + lastActorHalf + padX));
+
+    // Account for right extent of self-call messages (when single-actor or outward) and title bar width
+    let maxRightExtent = cursorX + lastActorHalf;
+    for (const msg of messages) {
+      const i1 = actorIndexById.get(msg.from) ?? 0;
+      const i2 = actorIndexById.get(msg.to) ?? 0;
+      if (i1 === i2) {
+        const selfDir =
+          actors.length > 1 && i1 === actors.length - 1 ? -1 : 1;
+        if (selfDir === 1) {
+          const cx = actorCentersX[i1] ?? padX;
+          const lw = this.measurer.measureLineWidth(
+            msg.label,
+            11,
+            fontSans,
+            600
+          );
+          maxRightExtent = Math.max(
+            maxRightExtent,
+            cx + selfLoopW + 8 + lw
+          );
+        }
+      }
+    }
+
+    const titleMinW = spec.title
+      ? this.measurer.measureLineWidth(spec.title, 12, fontSans, 600) + 36
+      : 0;
+    const totalW = Math.max(
+      240,
+      Math.ceil(titleMinW),
+      Math.ceil(maxRightExtent + padX)
+    );
     const width = typeof spec.width === "number" ? spec.width : totalW;
     const timelineStartY = titleBarHeight + padTop + actorBoxH;
     const timelineEndY =
-      timelineStartY + Math.max(1, messages.length) * msgRowH + 14;
+      timelineStartY + Math.max(1, messages.length) * msgRowH + 16;
     const height =
       typeof spec.height === "number"
         ? spec.height
@@ -2005,11 +2263,11 @@ export class HybridLayoutSolver {
     if (spec.title) {
       decorations.push({
         kind: "rect",
-        x: 1,
-        y: 1,
-        width: width - 2,
+        x: 0,
+        y: 0,
+        width,
         height: titleBarHeight,
-        rx: Math.max(0, style.radius - 1),
+        rx: 0,
         fill: this.theme.colors.surface,
       });
       decorations.push({
@@ -2053,7 +2311,7 @@ export class HybridLayoutSolver {
         tone: aTone,
       });
 
-      // Vertical lifeline
+      // Vertical lifeline (standardized 1.5px stroke width matching outer node borders)
       decorations.push({
         kind: "line",
         x: cx,
@@ -2061,7 +2319,7 @@ export class HybridLayoutSolver {
         x2: cx,
         y2: timelineEndY,
         stroke: this.theme.colors.border,
-        strokeWidth: 1.25,
+        strokeWidth: 1.5,
         strokeDasharray: "4 4",
       });
 
@@ -2127,59 +2385,50 @@ export class HybridLayoutSolver {
         tone: mTone,
       });
 
-      // Activation dots on lifelines
-      decorations.push({
-        kind: "circle",
-        x: x1,
-        y: msgY,
-        r: 3,
-        fill: mColor,
-      });
-
       if (fromIdx === toIdx) {
-        // Self-call message loop
-        const loopW = 36;
-        const loopH = 14;
+        // Self-call message loop: faces inward for rightmost actor so edge actors stay symmetrically framed
+        const selfDir =
+          actors.length > 1 && fromIdx === actors.length - 1 ? -1 : 1;
+        const topY = msgY - 4;
+        const botY = topY + selfLoopH;
+        const loopEndX = x1 + selfDir * selfLoopW;
+        // Pull back path endpoint by 7.7px (7.0px marker tip + 0.7px lifeline half-stroke) so tip kisses outer edge of lifeline
+        const returnShaftEndX = x1 + selfDir * 7.7;
+        const cornerR = 4;
+
+        const loopPathD = `M ${x1} ${topY} L ${loopEndX - selfDir * cornerR} ${topY} Q ${loopEndX} ${topY} ${loopEndX} ${topY + cornerR} L ${loopEndX} ${botY - cornerR} Q ${loopEndX} ${botY} ${loopEndX - selfDir * cornerR} ${botY} L ${returnShaftEndX} ${botY}`;
         decorations.push({
-          kind: "line",
+          kind: "path",
           x: x1,
-          y: msgY - 4,
-          x2: x1 + loopW,
-          y2: msgY - 4,
+          y: topY,
+          d: loopPathD,
           stroke: mColor,
-          strokeWidth: 1.5,
+          strokeWidth: 1.65,
+          markerEnd: `arrow-${mTone}`,
         });
+        // Solid start dot rendered on top of path start (x1, topY) for seamless cap
         decorations.push({
-          kind: "line",
-          x: x1 + loopW,
-          y: msgY - 4,
-          x2: x1 + loopW,
-          y2: msgY + loopH,
-          stroke: mColor,
-          strokeWidth: 1.5,
-        });
-        decorations.push({
-          kind: "line",
-          x: x1 + loopW,
-          y: msgY + loopH,
-          x2: x1 + 4,
-          y2: msgY + loopH,
-          stroke: mColor,
-          strokeWidth: 1.5,
+          kind: "circle",
+          x: x1,
+          y: topY,
+          r: 3.2,
+          fill: mColor,
         });
         decorations.push({
           kind: "text",
-          x: x1 + loopW + 8,
-          y: msgY + 6,
+          x: loopEndX + selfDir * 8,
+          y: topY + selfLoopH / 2 + 4,
           text: msg.label,
           fontFamily: fontSans,
           fontSize: 11,
           fontWeight: 600,
           textColor: mColor,
+          textAnchor: selfDir === -1 ? "end" : "start",
         });
       } else {
         const dir = x2 >= x1 ? 1 : -1;
-        const endX = x2 - dir * 5;
+        // Pull back shaft endpoint by 7.7px (7.0px marker tip + 0.7px lifeline half-stroke) so tip kisses outer edge of target lifeline
+        const endX = x2 - dir * 7.7;
         decorations.push({
           kind: "line",
           x: x1,
@@ -2187,27 +2436,17 @@ export class HybridLayoutSolver {
           x2: endX,
           y2: msgY,
           stroke: mColor,
-          strokeWidth: 1.6,
-          strokeDasharray: msg.type === "reply" ? "5 4" : undefined,
+          strokeWidth: 1.65,
+          strokeDasharray: msg.type === "reply" ? "5 3.5" : undefined,
+          markerEnd: `arrow-${mTone}`,
         });
-        // Arrowhead chevron lines
+        // Solid start dot rendered on top of line start (x1, msgY) for seamless cap
         decorations.push({
-          kind: "line",
-          x: x2 - dir * 8,
-          y: msgY - 4,
-          x2: x2 - dir * 1,
-          y2: msgY,
-          stroke: mColor,
-          strokeWidth: 1.8,
-        });
-        decorations.push({
-          kind: "line",
-          x: x2 - dir * 8,
-          y: msgY + 4,
-          x2: x2 - dir * 1,
-          y2: msgY,
-          stroke: mColor,
-          strokeWidth: 1.8,
+          kind: "circle",
+          x: x1,
+          y: msgY,
+          r: 3.2,
+          fill: mColor,
         });
 
         const midX = (x1 + x2) / 2;
@@ -2251,12 +2490,13 @@ export class HybridLayoutSolver {
       ? this.measurer.measureLineWidth(spec.sublabel, 11, fontSans, 400)
       : 0;
 
+    const maxTextW = Math.max(labelW, subW);
     const minW =
       spec.type === "diamond"
-        ? Math.max(labelW, subW) + 56
+        ? Math.ceil(maxTextW * (spec.sublabel ? 1.55 : 1.32) + 48)
         : spec.type === "queue"
-        ? Math.max(labelW, subW) + 52
-        : Math.max(labelW, subW) + 36;
+        ? maxTextW + 52
+        : maxTextW + 36;
     const width =
       typeof spec.width === "number"
         ? spec.width
@@ -2369,12 +2609,18 @@ export class HybridLayoutSolver {
     }
 
     const reqs: PairGapReq[] = [];
+    const labeledPairCount = new Map<string, number>();
     for (const conn of this.connections) {
       const fromBase = conn.from.split("@")[0].split(".")[0].trim();
       const toBase = conn.to.split("@")[0].split(".")[0].trim();
       const sibA = siblingByDescendant.get(fromBase);
       const sibB = siblingByDescendant.get(toBase);
       if (!sibA || !sibB || sibA === sibB) continue;
+
+      const pairKey = sibA < sibB ? `${sibA}::${sibB}` : `${sibB}::${sibA}`;
+      if (conn.label) {
+        labeledPairCount.set(pairKey, (labeledPairCount.get(pairKey) || 0) + 1);
+      }
 
       const labelW = conn.label
         ? this.measurer.measureLineWidth(
@@ -2385,9 +2631,20 @@ export class HybridLayoutSolver {
           ) + 18
         : 0;
 
-      const horizGap = conn.label ? Math.max(64, Math.ceil(labelW + 44)) : 40;
+      const horizGap = conn.label ? Math.max(84, Math.ceil(labelW + 56)) : 44;
       const vertGap = conn.label ? (compact ? 56 : 64) : 30;
       reqs.push({ sibA, sibB, horizGap, vertGap });
+    }
+
+    // Widen horizontal and vertical corridors when multiple labeled edges run in parallel between the same sibling pair
+    for (const r of reqs) {
+      const pairKey =
+        r.sibA < r.sibB ? `${r.sibA}::${r.sibB}` : `${r.sibB}::${r.sibA}`;
+      const cnt = labeledPairCount.get(pairKey) || 0;
+      if (cnt >= 2) {
+        r.horizGap += Math.min(72, (cnt - 1) * 28);
+        r.vertGap += Math.min(72, (cnt - 1) * 28);
+      }
     }
 
     return {
@@ -2451,10 +2708,25 @@ export class HybridLayoutSolver {
       let cursorY = 0;
       for (let i = 0; i < nodes.length; i++) {
         const n = nodes[i];
-        if (align === "stretch") {
-          n.width = maxW;
+        const canStretch = n.type === "card" && n.shape === "rect";
+        if (align === "stretch" && canStretch) {
+          const oldW = n.width;
+          const deltaW = maxW - oldW;
+          if (deltaW > 0) {
+            n.width = maxW;
+            // Keep top-right badge pills aligned to the stretched right border of cards
+            for (const dec of n.decorations) {
+              if (
+                (dec.kind === "rect" || dec.kind === "text") &&
+                dec.x > oldW * 0.5 &&
+                dec.y <= 32
+              ) {
+                dec.x += deltaW;
+              }
+            }
+          }
           n.x = 0;
-        } else if (align === "center") {
+        } else if (align === "stretch" || align === "center") {
           n.x = (maxW - n.width) / 2;
         } else if (align === "end") {
           n.x = maxW - n.width;
@@ -2555,17 +2827,23 @@ export class HybridLayoutSolver {
     for (const n of nodes) {
       colGroupById.set(n.id, new Set([n.id]));
     }
-    if (!compact) {
-      for (let i = 0; i < nodes.length; i++) {
-        const p = specs[i].place;
-        const vRef = p?.below || p?.above;
-        if (vRef && colGroupById.has(vRef)) {
-          const gA = colGroupById.get(nodes[i].id)!;
-          const gB = colGroupById.get(vRef)!;
-          const merged = new Set<string>([...gA, ...gB]);
-          for (const id of merged) {
-            colGroupById.set(id, merged);
-          }
+    for (let i = 0; i < nodes.length; i++) {
+      const p = specs[i].place;
+      const vRef = p?.below || p?.above;
+      if (vRef && colGroupById.has(vRef)) {
+        // In compact mode, only chain nodes whose rawPlace is below/above (not converted rightOf)
+        // and only when the parent itself isn't in a fan-out with this child's siblings
+        if (compact) {
+          const refHasRightOfSibling = specs.some(
+            (s) => s.place?.rightOf === vRef || s.place?.leftOf === vRef
+          );
+          if (refHasRightOfSibling) continue;
+        }
+        const gA = colGroupById.get(nodes[i].id)!;
+        const gB = colGroupById.get(vRef)!;
+        const merged = new Set<string>([...gA, ...gB]);
+        for (const id of merged) {
+          colGroupById.set(id, merged);
         }
       }
     }
@@ -2684,7 +2962,7 @@ export class HybridLayoutSolver {
           });
           cursor += n.height + (stepGaps[i] || 0);
         }
-      } else if (!compact) {
+      } else {
         // Spread below/above fan-out siblings horizontally and center around ref's horizontal midpoint
         let totalW = 0;
         const stepGaps: number[] = [];
@@ -2693,9 +2971,11 @@ export class HybridLayoutSolver {
           totalW += n.width;
           if (i < groupIds.length - 1) {
             const nextId = groupIds[i + 1];
+            const gA = colGroupById.get(n.id) || [n.id];
+            const gB = colGroupById.get(nextId) || [nextId];
             const g = Math.max(
               28,
-              gapResolver.getRequiredGap([n.id], [nextId], "horizontal")
+              gapResolver.getRequiredGap(gA, gB, "horizontal")
             );
             stepGaps.push(g);
             totalW += g;
@@ -2751,9 +3031,22 @@ export class HybridLayoutSolver {
           const groupA = isHorizPlace
             ? colGroupById.get(ref.id) || [ref.id]
             : [ref.id];
+          const fanDirKey = place.rightOf
+            ? `rightOf::${place.rightOf}`
+            : place.leftOf
+            ? `leftOf::${place.leftOf}`
+            : place.below
+            ? `below::${place.below}`
+            : place.above
+            ? `above::${place.above}`
+            : undefined;
+          const fanPeerIds =
+            fanDirKey && fanGroups.get(fanDirKey)
+              ? fanGroups.get(fanDirKey)!
+              : [node.id];
           const groupB = isHorizPlace
             ? colGroupById.get(node.id) || [node.id]
-            : [node.id];
+            : fanPeerIds;
           const connReqGap = gapResolver.getRequiredGap(
             groupA,
             groupB,
@@ -2841,17 +3134,36 @@ export class HybridLayoutSolver {
         }
       }
 
-      // AABB collision guard: nudge node if it overlaps any already-placed sibling
+      // Direction-aware AABB collision guard: nudge node if it overlaps any already-placed sibling
       let guardIter = 0;
       while (guardIter < 16) {
-        const hit = placedNodes.find((p) => nodesOverlap(node, p, 20));
+        const hit = placedNodes.find((p) => nodesOverlap(node, p, 24));
         if (!hit) break;
+        const hitPlace = effPlaceById.get(hit.id);
+        const vGap = Math.max(
+          48,
+          gapResolver.getRequiredGap([hit.id], [node.id], "vertical")
+        );
+        const hGap = Math.max(
+          44,
+          gapResolver.getRequiredGap([hit.id], [node.id], "horizontal")
+        );
         if (place?.above) {
-          node.y = hit.y - node.height - 24;
+          node.y = hit.y - node.height - vGap;
         } else if (place?.leftOf) {
-          node.x = hit.x - node.width - 28;
+          if (hitPlace?.leftOf && hitPlace.leftOf === place.leftOf) {
+            node.y = hit.y + hit.height + vGap;
+          } else {
+            node.x = hit.x - node.width - hGap;
+          }
+        } else if (place?.rightOf) {
+          if (hitPlace?.rightOf && hitPlace.rightOf === place.rightOf) {
+            node.y = hit.y + hit.height + vGap;
+          } else {
+            node.x = hit.x + hit.width + hGap;
+          }
         } else {
-          node.y = hit.y + hit.height + 24;
+          node.y = hit.y + hit.height + vGap;
         }
         guardIter++;
       }

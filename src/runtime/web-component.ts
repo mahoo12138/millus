@@ -340,6 +340,9 @@ export class AiIllustrationElement extends BaseHTMLElement {
     const applyFocus = (focusKey: string | null) => {
       const allNodes = svgEl.querySelectorAll<SVGGElement>(".ai-ill-node");
       const allEdges = svgEl.querySelectorAll<SVGGElement>(".ai-ill-edge");
+      const allEdgeLabels = svgEl.querySelectorAll<SVGGElement>(
+        ".ai-ill-edge-label"
+      );
       const allAnchors =
         svgEl.querySelectorAll<SVGElement>(".ai-ill-subanchor");
       const allCalloutLinks = svgEl.querySelectorAll<SVGGElement>(
@@ -352,6 +355,9 @@ export class AiIllustrationElement extends BaseHTMLElement {
           el.classList.remove("is-active", "is-dimmed")
         );
         allEdges.forEach((el) =>
+          el.classList.remove("is-active", "is-dimmed")
+        );
+        allEdgeLabels.forEach((el) =>
           el.classList.remove("is-active", "is-dimmed")
         );
         allAnchors.forEach((el) => el.classList.remove("is-active"));
@@ -376,6 +382,17 @@ export class AiIllustrationElement extends BaseHTMLElement {
       });
 
       allEdges.forEach((el) => {
+        const eid = el.getAttribute("data-edge-id") || "";
+        if (activeSet.edgeIds.has(eid)) {
+          el.classList.add("is-active");
+          el.classList.remove("is-dimmed");
+        } else {
+          el.classList.add("is-dimmed");
+          el.classList.remove("is-active");
+        }
+      });
+
+      allEdgeLabels.forEach((el) => {
         const eid = el.getAttribute("data-edge-id") || "";
         if (activeSet.edgeIds.has(eid)) {
           el.classList.add("is-active");

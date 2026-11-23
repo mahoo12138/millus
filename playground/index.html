@@ -267,6 +267,11 @@
           <option value="memory">2. 零拷贝内存布局与内核态调用 (Table + Terminal)</option>
           <option value="canvas">3. 自由几何 Canvas 与分布式网关拓扑</option>
           <option value="protocol">4. 协议位图与分布式队列时序 (Bitfield + Queue + Cylinder + Sequence)</option>
+          <option value="frontend_compile">5. React 18 Fiber 并发渲染与 Vue 3 编译期靶向优化</option>
+          <option value="browser_url">6. 浏览器打开 URL 全链路过程 (DNS/QUIC → Blink → Viz GPU)</option>
+          <option value="leetcode_hard">7. LeetCode 42. 接雨水 (Hard) 单调递减栈按层消解图解</option>
+          <option value="android_arch">8. Android 系统五层架构全景与 Binder / HAL 跨层通信</option>
+          <option value="esp32_circuit">9. 基于 ESP32-S3 的端侧 AI 语音唤醒与外设电路设计 (Blueprint)</option>
         </select>
       </div>
 
@@ -756,7 +761,7 @@
         ],
         connections: [
           {
-            from: "wal_header.field_1@bottom",
+            from: "wal_header.field_0@bottom",
             to: "raft_queue@top",
             label: "封装帧批次",
             tone: "primary",
@@ -776,6 +781,1013 @@
             routing: "curved",
             tone: "primary",
             animation: { type: "pulse", speed: "fast" }
+          }
+        ]
+      },
+
+      frontend_compile: {
+        title: "React 18 Fiber 并发时间切片与 Vue 3 编译期 PatchFlags 靶向更新",
+        canvas: {
+          background: "dots",
+          padding: 36
+        },
+        elements: [
+          {
+            id: "vue_sfc",
+            type: "code-block",
+            title: "App.vue → compile() 编译产物",
+            lang: "ts",
+            highlightLines: [2, 4, 5],
+            code: "const _hoisted_1 = createVNode(\"h1\", null, \"Static\");\nexport function render(_ctx) {\n  return (openBlock(), createElementBlock(\"div\", null, [\n    _hoisted_1,\n    createElementVNode(\"span\", null, _ctx.msg, 1 /* TEXT */)\n  ]));\n}",
+            style: {
+              tone: "success",
+              elevation: "sm"
+            }
+          },
+          {
+            id: "note_patch",
+            type: "callout",
+            text: "编译期静态分析注入 1 /* TEXT */ 位标记，Diff 时直接跳过静态子树！",
+            target: "vue_sfc.line_5",
+            side: "top",
+            style: {
+              tone: "warning"
+            }
+          },
+          {
+            id: "patch_flags",
+            type: "bitfield",
+            title: "Vue 3 PatchFlags 32-bit 靶向位掩码",
+            totalBits: 32,
+            place: {
+              below: "vue_sfc",
+              gap: 44,
+              align: "start"
+            },
+            fields: [
+              { name: "TEXT", bits: 4, value: "0x01", tone: "success" },
+              { name: "CLASS", bits: 4, value: "0x02", tone: "info" },
+              { name: "STYLE", bits: 4, value: "0x04", tone: "primary" },
+              { name: "PROPS", bits: 8, value: "0x08", tone: "warning" },
+              { name: "HOISTED", bits: 12, value: "-1 静态", tone: "neutral" }
+            ]
+          },
+          {
+            id: "vue_runtime",
+            type: "group",
+            title: "Vue 3 运行时 Block Tree 靶向 Patch",
+            place: {
+              rightOf: "vue_sfc",
+              gap: 68,
+              align: "start"
+            },
+            layout: {
+              type: "flex",
+              direction: "column",
+              gap: 16
+            },
+            style: {
+              tone: "success",
+              variant: "dashed"
+            },
+            children: [
+              {
+                id: "static_hoist",
+                type: "card",
+                icon: "layers",
+                title: "1. Static Hoisting 静态提升",
+                badge: "0 Diff",
+                body: "_hoisted_1 在模块初始化时仅创建一次，重渲染直接复用引用",
+                style: {
+                  tone: "neutral",
+                  variant: "soft"
+                }
+              },
+              {
+                id: "block_patch",
+                type: "card",
+                icon: "zap",
+                title: "2. dynamicChildren 扁平靶向遍历",
+                badge: "O(动态节点)",
+                body: "绕过 VNode 树层级递归，仅对 dynamicChildren 数组执行位与更新",
+                style: {
+                  tone: "success",
+                  variant: "soft"
+                }
+              }
+            ]
+          },
+          {
+            id: "react_fiber",
+            type: "group",
+            title: "React 18 Fiber 并发时间切片管线 (WorkLoop)",
+            place: {
+              below: "patch_flags",
+              gap: 48,
+              align: "start"
+            },
+            layout: {
+              type: "flex",
+              direction: "row",
+              gap: 24
+            },
+            style: {
+              tone: "primary",
+              variant: "outlined"
+            },
+            children: [
+              {
+                id: "lane_queue",
+                type: "queue",
+                label: "Scheduler Lane 队列",
+                sublabel: "MessageChannel 5ms 宏任务切片",
+                style: {
+                  tone: "info",
+                  variant: "soft"
+                }
+              },
+              {
+                id: "render_phase",
+                type: "card",
+                icon: "cpu",
+                title: "Render Phase (可中断异步)",
+                badge: "workInProgress",
+                body: "beginWork 向下递推 → completeWork 向上归并构建双缓冲 Fiber 树",
+                style: {
+                  tone: "primary",
+                  variant: "soft"
+                }
+              },
+              {
+                id: "commit_phase",
+                type: "card",
+                icon: "check",
+                title: "Commit Phase (同步原子上屏)",
+                badge: "SubtreeFlags",
+                body: "beforeMutation → mutation(DOM 变更) → layout(切换 current 指针)",
+                style: {
+                  tone: "accent",
+                  variant: "soft"
+                }
+              }
+            ]
+          },
+          {
+            id: "compare_matrix",
+            type: "table",
+            title: "React Fiber vs Vue 3 编译优化核心复杂度对比",
+            place: {
+              rightOf: "vue_runtime",
+              gap: 64,
+              align: "start"
+            },
+            headers: ["对比维度", "React 18 Concurrent", "Vue 3 Block Tree"],
+            rows: [
+              ["核心策略", { text: "运行时时间切片 (Time Slicing)", tone: "primary" }, { text: "编译期静态分析 (AOT Hints)", tone: "success" }],
+              ["Diff 粒度", "组件级 Fiber 树 + SubtreeFlags", { text: "dynamicChildren 靶向直达", tone: "success" }],
+              ["中断能力", { text: "shouldYield() 5ms 随时让出主线程", tone: "info" }, "同步极速完成 (单次更新耗时极短)"]
+            ],
+            style: {
+              tone: "primary",
+              variant: "outlined"
+            }
+          }
+        ],
+        connections: [
+          {
+            from: "vue_sfc.line_1@right",
+            to: "static_hoist@left",
+            label: "常量 VNode 提升",
+            tone: "neutral",
+            strokeStyle: "dashed"
+          },
+          {
+            from: "vue_sfc.line_5@right",
+            to: "block_patch@left",
+            label: "收集至 dynamicChildren",
+            tone: "success",
+            animation: { type: "pulse", speed: "fast" }
+          },
+          {
+            from: "patch_flags.field_1@right",
+            to: "block_patch@bottom",
+            label: "flag & TEXT 位判断",
+            tone: "success"
+          },
+          {
+            from: "lane_queue@right",
+            to: "render_phase@left",
+            label: "消费高优 Lane",
+            tone: "info",
+            animation: { type: "flow" }
+          },
+          {
+            from: "render_phase@right",
+            to: "commit_phase@left",
+            label: "finishedWork 就绪",
+            tone: "primary",
+            animation: { type: "pulse" }
+          },
+          {
+            from: "block_patch@right",
+            to: "compare_matrix.cell_1_2@left",
+            label: "跳过静态子树",
+            tone: "success"
+          },
+          {
+            from: "commit_phase@top",
+            to: "compare_matrix.cell_2_1@bottom",
+            label: "双缓冲指针切换",
+            tone: "primary"
+          }
+        ]
+      },
+
+      browser_url: {
+        title: "浏览器打开 URL 到屏幕像素上屏全链路 (Navigation → Blink → Compositor → GPU)",
+        canvas: {
+          background: "grid",
+          padding: 36
+        },
+        elements: [
+          {
+            id: "net_seq",
+            type: "sequence",
+            title: "1. Browser & Network 进程：DNS / QUIC / TLS 1.3 握手",
+            actors: [
+              { id: "ui_proc", label: "Browser 主进程", sublabel: "UI / Navigation", tone: "primary" },
+              { id: "net_proc", label: "Network 进程", sublabel: "Socket / Cache", tone: "info" },
+              { id: "cdn_edge", label: "CDN / Origin", sublabel: "HTTP/3 QUIC", tone: "success" }
+            ],
+            messages: [
+              { from: "ui_proc", to: "net_proc", label: "NavigationRequest(https://...)", type: "sync", tone: "primary" },
+              { from: "net_proc", to: "net_proc", label: "HSTS 预加载 & ServiceWorker 拦截检查", tone: "warning" },
+              { from: "net_proc", to: "cdn_edge", label: "DNS + QUIC 0-RTT + TLS 1.3 Early Data", type: "sync", tone: "info" },
+              { from: "cdn_edge", to: "net_proc", label: "200 OK (text/html 分块字节流)", type: "reply", tone: "success" }
+            ]
+          },
+          {
+            id: "disk_cache",
+            type: "cylinder",
+            label: "HTTP Disk & Memory Cache",
+            sublabel: "Cache-Control / ETag / Brotli 字典",
+            place: {
+              below: "net_seq",
+              gap: 44,
+              align: "center"
+            },
+            style: {
+              tone: "info",
+              variant: "soft",
+              elevation: "sm"
+            }
+          },
+          {
+            id: "renderer_win",
+            type: "window",
+            title: "2. Renderer 渲染进程 (Blink 主线程 + Compositor 合成线程)",
+            url: "chrome://tracing/blink-compositor-pipeline",
+            place: {
+              rightOf: "net_seq",
+              gap: 68,
+              align: "start"
+            },
+            layout: {
+              type: "flex",
+              direction: "column",
+              gap: 16
+            },
+            style: {
+              tone: "primary",
+              variant: "outlined"
+            },
+            children: [
+              {
+                id: "blink_parser",
+                type: "card",
+                icon: "code",
+                title: "HTML / CSS 流式解析器",
+                badge: "Main Thread",
+                body: "预加载扫描器 PreloadScanner 并行拉取资源 → 构建 DOM 树与 CSSOM 树",
+                style: {
+                  tone: "primary",
+                  variant: "soft"
+                }
+              },
+              {
+                id: "layout_layer",
+                type: "card",
+                icon: "layers",
+                title: "Style → LayoutNG → Pre-Paint",
+                badge: "Layout Tree",
+                body: "计算精确几何盒模型与 PropertyTrees (Transform/Clip/Effect) → 生成 PaintArtifact",
+                style: {
+                  tone: "secondary",
+                  variant: "soft"
+                }
+              },
+              {
+                id: "cc_impl",
+                type: "card",
+                icon: "cpu",
+                title: "Compositor 合成器线程 (Impl Thread)",
+                badge: "VSync 驱动",
+                body: "将图层切分为 256×256 图块 (Tiles) → 分发给 Worker 线程池做 GPU 光栅化",
+                style: {
+                  tone: "accent",
+                  variant: "soft"
+                }
+              }
+            ]
+          },
+          {
+            id: "frame_sink_q",
+            type: "queue",
+            label: "CompositorFrameSink (Mojo IPC)",
+            sublabel: "打包 DrawQuads 提交至 Viz 进程",
+            place: {
+              below: "renderer_win",
+              gap: 44,
+              align: "center"
+            },
+            style: {
+              tone: "accent",
+              variant: "soft"
+            }
+          },
+          {
+            id: "viz_gpu_table",
+            type: "table",
+            title: "3. Viz / GPU 进程硬件加速合成与屏幕扫描上屏",
+            place: {
+              rightOf: "renderer_win",
+              gap: 64,
+              align: "start"
+            },
+            headers: ["流水线阶段", "执行引擎", "图形缓冲产物"],
+            rows: [
+              ["1. Tile Raster", { text: "Skia Graphite / Ganesh", tone: "info" }, "GPU 显存纹理 (SharedImage)"],
+              ["2. Surface 聚合", { text: "Viz DisplayCompositor", tone: "primary" }, "合并浏览器 UI 与网页帧"],
+              ["3. 硬件呈现", { text: "Vulkan / Metal SwapChain", tone: "success" }, "120Hz VSync 屏幕像素上屏"]
+            ],
+            style: {
+              tone: "success",
+              variant: "outlined"
+            }
+          }
+        ],
+        connections: [
+          {
+            from: "net_seq.net_proc@bottom",
+            to: "disk_cache@top",
+            label: "强缓存/协商缓存读写",
+            tone: "info",
+            strokeStyle: "dashed"
+          },
+          {
+            from: "net_seq@right",
+            to: "blink_parser@left",
+            label: "CommitNavigation (Mojo DataPipe)",
+            tone: "success",
+            animation: { type: "pulse", speed: "fast" }
+          },
+          {
+            from: "blink_parser@bottom",
+            to: "layout_layer@top",
+            label: "DOM + CSSOM 挂载",
+            tone: "primary"
+          },
+          {
+            from: "layout_layer@bottom",
+            to: "cc_impl@top",
+            label: "Commit 图层树同步",
+            tone: "secondary"
+          },
+          {
+            from: "cc_impl@bottom",
+            to: "frame_sink_q@top",
+            label: "生成 CompositorFrame",
+            tone: "accent",
+            animation: { type: "flow" }
+          },
+          {
+            from: "cc_impl@right",
+            to: "viz_gpu_table.cell_0_0@left",
+            label: "OOP-R 硬件光栅化指令",
+            tone: "info"
+          },
+          {
+            from: "frame_sink_q@right",
+            to: "viz_gpu_table.cell_1_0@left",
+            label: "SubmitCompositorFrame",
+            tone: "accent",
+            animation: { type: "pulse" }
+          }
+        ]
+      },
+
+      leetcode_hard: {
+        title: "LeetCode 42. 接雨水 (Hard) — 单调递减栈按层水平消解过程图解",
+        canvas: {
+          background: "dots",
+          padding: 36
+        },
+        elements: [
+          {
+            id: "trap_code",
+            type: "code-block",
+            title: "trap_rain_water.ts — O(n) 单调递减栈解法",
+            lang: "ts",
+            highlightLines: [2, 5, 6, 7],
+            code: "while (stk.length && h[i] > h[stk[stk.length - 1]]) {\n  const bot = stk.pop()!;           // 1. 弹出凹槽谷底下标\n  if (!stk.length) break;           // 左侧无挡板则无法蓄水\n  const left = stk[stk.length - 1]; // 2. 栈顶即为左高墙下标\n  const w = i - left - 1;           // 3. 水平蓄水跨度 w\n  const dh = Math.min(h[left], h[i]) - h[bot]; // 4. 木桶水深 dh\n  ans += w * dh;                    // 5. 按层累加矩形雨水面积\n}",
+            style: {
+              tone: "primary",
+              elevation: "sm"
+            }
+          },
+          {
+            id: "note_wood",
+            type: "callout",
+            text: "核心不变量：栈内下标高度严格单调递减；一旦遇到更高右墙 h[i]，即刻结算左右墙夹住的水平雨水层！",
+            target: "trap_code.line_6",
+            side: "top",
+            style: {
+              tone: "warning"
+            }
+          },
+          {
+            id: "mono_stk",
+            type: "queue",
+            label: "单调递减栈 stk (存储柱子下标)",
+            sublabel: "栈底 [ idx=1(h=2), idx=2(h=1), idx=3(h=0) ] 栈顶 ← i=4(h=3) 触发连续弹栈",
+            place: {
+              below: "trap_code",
+              gap: 44,
+              align: "start"
+            },
+            style: {
+              tone: "accent",
+              variant: "soft"
+            }
+          },
+          {
+            id: "trace_matrix",
+            type: "table",
+            title: "当扫描至右墙 i = 4 (height[4] = 3) 时的两轮弹栈消解轨迹",
+            place: {
+              rightOf: "trap_code",
+              gap: 68,
+              align: "start"
+            },
+            headers: ["消解轮次", "弹出谷底 bot", "左高墙 left", "水平跨度 w", "净水深 dh", "本层蓄水量"],
+            rows: [
+              ["第 1 轮弹栈", { text: "idx=3 (h=0)", tone: "warning" }, "idx=2 (h=1)", "4 - 2 - 1 = 1", "min(1, 3) - 0 = 1", { text: "+1 (总计 1)", tone: "success" }],
+              ["第 2 轮弹栈", { text: "idx=2 (h=1)", tone: "warning" }, "idx=1 (h=2)", "4 - 1 - 1 = 2", "min(2, 3) - 1 = 1", { text: "+2 (总计 3)", tone: "success" }],
+              ["第 3 轮弹栈", { text: "idx=1 (h=2)", tone: "neutral" }, "栈空 break", "无左墙挡板", "0 (左侧溢出)", { text: "+0 (i=4 入栈)", tone: "info" }]
+            ],
+            style: {
+              tone: "primary",
+              variant: "outlined"
+            }
+          },
+          {
+            id: "elevation_bits",
+            type: "bitfield",
+            title: "柱高数组 height[0..5] 扫描窗口与水位填平状态",
+            totalBits: 48,
+            place: {
+              below: "trace_matrix",
+              gap: 44,
+              align: "start"
+            },
+            fields: [
+              { name: "i=0 (h=0)", bits: 8, value: "无左墙", tone: "neutral" },
+              { name: "i=1 (h=2)", bits: 8, value: "左高墙", tone: "primary" },
+              { name: "i=2 (h=1)", bits: 8, value: "蓄水+1", tone: "info" },
+              { name: "i=3 (h=0)", bits: 8, value: "蓄水+2", tone: "info" },
+              { name: "i=4 (h=3)", bits: 8, value: "当前右墙", tone: "success" },
+              { name: "i=5 (h=1)", bits: 8, value: "待扫描", tone: "neutral" }
+            ]
+          }
+        ],
+        connections: [
+          {
+            from: "trap_code.line_2@bottom",
+            to: "mono_stk@top",
+            label: "stk.pop() 弹出谷底",
+            tone: "warning",
+            animation: { type: "pulse" }
+          },
+          {
+            from: "trap_code.line_5@right",
+            to: "trace_matrix.cell_0_3@left",
+            label: "计算跨度 w",
+            tone: "primary"
+          },
+          {
+            from: "trap_code.line_6@right",
+            to: "trace_matrix.cell_1_4@left",
+            label: "木桶高差 dh",
+            tone: "info"
+          },
+          {
+            from: "trap_code.line_7@right",
+            to: "trace_matrix.cell_1_5@left",
+            label: "累加 w × dh",
+            tone: "success",
+            animation: { type: "pulse", speed: "fast" }
+          },
+          {
+            from: "mono_stk@right",
+            to: "elevation_bits@left",
+            label: "维护单调递减栈",
+            tone: "accent"
+          },
+          {
+            from: "elevation_bits.field_5@top",
+            to: "trace_matrix.cell_1_5@bottom",
+            label: "右墙 h[4]=3 触发结算",
+            tone: "success"
+          }
+        ]
+      },
+
+      android_arch: {
+        title: "Android 系统五层架构全景与 Binder IPC / HAL 跨层通信拓扑",
+        canvas: {
+          background: "grid",
+          padding: 36
+        },
+        elements: [
+          {
+            id: "app_tier",
+            type: "group",
+            title: "1. System Apps & Jetpack Compose 应用层",
+            layout: {
+              type: "flex",
+              direction: "row",
+              gap: 20
+            },
+            style: {
+              tone: "primary",
+              variant: "outlined"
+            },
+            children: [
+              {
+                id: "compose_ui",
+                type: "card",
+                icon: "sparkles",
+                title: "Jetpack Compose / View 树",
+                badge: "UI Thread",
+                body: "Choreographer 接收 VSync 信号 → 执行测量、布局与 RenderNode 录制",
+                style: {
+                  tone: "primary",
+                  variant: "soft"
+                }
+              },
+              {
+                id: "activity_thread",
+                type: "card",
+                icon: "layers",
+                title: "ActivityThread & Looper",
+                badge: "App Process",
+                body: "epoll 驱动主线程 MessageQueue，通过 ApplicationThread 响应 AMS 调度",
+                style: {
+                  tone: "info",
+                  variant: "soft"
+                }
+              }
+            ]
+          },
+          {
+            id: "fw_tier",
+            type: "group",
+            title: "2. Java API Framework (system_server 核心系统服务层)",
+            place: {
+              below: "app_tier",
+              gap: 44,
+              align: "start"
+            },
+            layout: {
+              type: "flex",
+              direction: "row",
+              gap: 20
+            },
+            style: {
+              tone: "secondary",
+              variant: "outlined"
+            },
+            children: [
+              {
+                id: "wms_svc",
+                type: "card",
+                icon: "layers",
+                title: "WindowManagerService (WMS)",
+                badge: "WindowToken",
+                body: "管理全局窗口 Surface 树、Z-Order 层级与 InputDispatcher 触控分发",
+                style: {
+                  tone: "secondary",
+                  variant: "soft"
+                }
+              },
+              {
+                id: "atms_svc",
+                type: "card",
+                icon: "cpu",
+                title: "ActivityTaskManager (ATMS)",
+                badge: "AMS / PMS",
+                body: "管控 Activity 任务栈生命周期、进程 OomAdj 优先级与包管理服务",
+                style: {
+                  tone: "primary",
+                  variant: "soft"
+                }
+              }
+            ]
+          },
+          {
+            id: "native_tier",
+            type: "group",
+            title: "3. Native Daemons & Android Runtime (ART 虚拟机与图形合成)",
+            place: {
+              below: "fw_tier",
+              gap: 44,
+              align: "start"
+            },
+            layout: {
+              type: "flex",
+              direction: "row",
+              gap: 20
+            },
+            style: {
+              tone: "accent",
+              variant: "outlined"
+            },
+            children: [
+              {
+                id: "surface_flinger",
+                type: "card",
+                icon: "zap",
+                title: "SurfaceFlinger & RenderEngine",
+                badge: "BLASTBufferQueue",
+                body: "消费各应用 GraphicBuffer 图层 → 构建合成列表委托 HWC 硬件叠层",
+                style: {
+                  tone: "accent",
+                  variant: "soft"
+                }
+              },
+              {
+                id: "art_runtime",
+                type: "card",
+                icon: "code",
+                title: "Android Runtime (ART) & Zygote",
+                badge: "AOT + JIT",
+                body: "dex2oat 混合编译、Generational CC 并发垃圾回收与写时复制进程孵化",
+                style: {
+                  tone: "warning",
+                  variant: "soft"
+                }
+              }
+            ]
+          },
+          {
+            id: "binder_ipc_bus",
+            type: "queue",
+            label: "Binder IPC 零拷贝通信总线",
+            sublabel: "mmap 128KB 内核映射 (仅一次拷贝) + AIDL ServiceManager 寻址",
+            place: {
+              rightOf: "fw_tier",
+              gap: 68,
+              align: "center"
+            },
+            style: {
+              tone: "info",
+              variant: "soft"
+            }
+          },
+          {
+            id: "hal_matrix",
+            type: "table",
+            title: "4. Hardware Abstraction Layer (AIDL / HIDL 硬件抽象层)",
+            place: {
+              below: "binder_ipc_bus",
+              gap: 44,
+              align: "start"
+            },
+            headers: ["HAL 子系统", "IPC 传输机制", "独立守护进程"],
+            rows: [
+              ["Composer HAL", { text: "AIDL + Fence 同步栅栏", tone: "accent" }, "vendor.hwcomposer-service"],
+              ["Camera HAL3", { text: "FMQ 快速消息队列 + Gralloc", tone: "primary" }, "camerahalserver"],
+              ["Audio / NNAPI", { text: "ashmem 匿名共享内存", tone: "success" }, "audioserver / neuralnetworks"]
+            ],
+            style: {
+              tone: "success",
+              variant: "outlined"
+            }
+          },
+          {
+            id: "linux_kernel",
+            type: "cylinder",
+            label: "5. Linux Kernel (Binder Driver / DRM-KMS / ION-DMA-BUF / WakeLocks)",
+            sublabel: "安全隔离 (SELinux) + 内存共享 (dma_buf) + 硬件设备驱动",
+            place: {
+              below: "native_tier",
+              gap: 48,
+              align: "center"
+            },
+            style: {
+              tone: "success",
+              variant: "soft",
+              elevation: "md"
+            }
+          }
+        ],
+        connections: [
+          {
+            from: "compose_ui@bottom",
+            to: "wms_svc@top",
+            label: "relayoutWindow",
+            tone: "primary"
+          },
+          {
+            from: "activity_thread@bottom",
+            to: "atms_svc@top",
+            label: "IActivityClientController",
+            tone: "info"
+          },
+          {
+            from: "wms_svc@bottom",
+            to: "surface_flinger@top",
+            label: "BLAST 图层事务",
+            tone: "accent",
+            animation: { type: "pulse" }
+          },
+          {
+            from: "atms_svc@bottom",
+            to: "art_runtime@top",
+            label: "Zygote Socket 孵化",
+            tone: "warning"
+          },
+          {
+            from: "atms_svc@right",
+            to: "binder_ipc_bus@left",
+            label: "Binder 事务分发",
+            tone: "info",
+            animation: { type: "flow" }
+          },
+          {
+            from: "binder_ipc_bus@bottom",
+            to: "hal_matrix@top",
+            label: "跨进程 Vendor AIDL",
+            tone: "info"
+          },
+          {
+            from: "surface_flinger@right",
+            to: "hal_matrix.cell_0_0@left",
+            label: "validateDisplay / present",
+            tone: "accent",
+            animation: { type: "pulse", speed: "fast" }
+          },
+          {
+            from: "surface_flinger@bottom",
+            to: "linux_kernel@top",
+            label: "DRM/KMS 原子翻页",
+            tone: "success"
+          },
+          {
+            from: "hal_matrix@bottom",
+            to: "linux_kernel@right",
+            label: "ioctl / dma_buf 驱动调用",
+            tone: "success"
+          }
+        ]
+      },
+
+      esp32_circuit: {
+        title: "基于 ESP32-S3 的端侧 AI 语音唤醒与 I2S / FSPI 外设电路设计蓝图",
+        style: {
+          preset: "blueprint"
+        },
+        canvas: {
+          background: "grid",
+          padding: 36
+        },
+        elements: [
+          {
+            id: "pwr_domain",
+            type: "group",
+            title: "1. USB-C 供电与 3.3V LDO 滤波电路",
+            layout: {
+              type: "flex",
+              direction: "column",
+              gap: 16
+            },
+            style: {
+              tone: "warning",
+              variant: "outlined"
+            },
+            children: [
+              {
+                id: "usb_typec",
+                type: "card",
+                icon: "zap",
+                title: "USB Type-C 16P 接口",
+                badge: "VBUS 5.0V",
+                body: "CC1/CC2 接 5.1kΩ 下拉电阻 + USBLC6-2SC6 双路 TVS 静电防护",
+                style: {
+                  tone: "warning",
+                  variant: "soft"
+                }
+              },
+              {
+                id: "ldo_reg",
+                type: "card",
+                icon: "cpu",
+                title: "ME6211C33 / AMS1117-3.3",
+                badge: "3.3V @ 800mA",
+                body: "输入 10μF + 输出 22μF/100nF 多级陶瓷退耦电容，抑制 Wi-Fi 射频尖峰",
+                style: {
+                  tone: "success",
+                  variant: "soft"
+                }
+              }
+            ]
+          },
+          {
+            id: "opi_psram",
+            type: "cylinder",
+            label: "8MB Octal SPI PSRAM + 16MB Flash",
+            sublabel: "120MHz DDR 八线总线 — 常驻 ESP-SR WakeNet9 语音模型",
+            place: {
+              below: "pwr_domain",
+              gap: 44,
+              align: "start"
+            },
+            style: {
+              tone: "info",
+              variant: "soft"
+            }
+          },
+          {
+            id: "esp32_s3_pinout",
+            type: "table",
+            title: "2. ESP32-S3-WROOM-1 (Xtensa LX7 双核 240MHz + SIMD 向量指令) 总线矩阵",
+            place: {
+              rightOf: "pwr_domain",
+              gap: 68,
+              align: "start"
+            },
+            headers: ["GPIO 引脚组", "外设控制器", "原理图网络标号 (NetLabel)", "信号流向"],
+            rows: [
+              ["GPIO 4 / 5 / 6", "I2S0_MCLK / BCLK / DOUT", { text: "MIC_SCK / MIC_WS / MIC_SD", tone: "primary" }, "← 麦克风采样输入"],
+              ["GPIO 15 / 16 / 17", "I2S1_BCLK / LRCK / DIN", { text: "AMP_BCLK / AMP_LRC / AMP_DIN", tone: "success" }, "→ 数字功放输出"],
+              ["GPIO 10 / 11 / 12 / 13", "FSPI_CS / CLK / MOSI / DC", { text: "LCD_CS / SCK / SDA / RS", tone: "accent" }, "→ 80MHz 彩屏 DMA"],
+              ["GPIO 19 / 20", "USB_SERIAL_JTAG", { text: "USB_D_N / USB_D_P (90Ω 差分)", tone: "warning" }, "↔ 原生 USB 调试"],
+              ["GPIO 26 .. 32", "SPI0/1 Octal OPI", { text: "PSRAM_CLK / CS / D0..D7", tone: "info" }, "↔ 高速 PSRAM 映射"]
+            ],
+            style: {
+              tone: "primary",
+              variant: "outlined"
+            }
+          },
+          {
+            id: "note_gdma",
+            type: "callout",
+            text: "I2S0 采样数据经 GDMA 控制器直接搬运至内部 SRAM 环形队列，零 CPU 干预喂入 ESP-SR 唤醒引擎",
+            target: "esp32_s3_pinout.cell_0_0",
+            side: "top",
+            style: {
+              tone: "info"
+            }
+          },
+          {
+            id: "gdma_reg",
+            type: "bitfield",
+            title: "ESP32-S3 I2S_RX_CONF_REG (0x6000F020) 硬件音频寄存器位图",
+            totalBits: 32,
+            place: {
+              below: "esp32_s3_pinout",
+              gap: 44,
+              align: "start"
+            },
+            fields: [
+              { name: "RX_START", bits: 2, value: "0b1", tone: "success" },
+              { name: "SLAVE_MOD", bits: 2, value: "0 Master", tone: "primary" },
+              { name: "TDM_PHILIPS", bits: 4, value: "I2S 标准", tone: "info" },
+              { name: "BITS_MOD", bits: 8, value: "24-bit PCM", tone: "accent" },
+              { name: "CLKM_DIV", bits: 8, value: "16kHz 采样", tone: "warning" },
+              { name: "DMA_EOF_NUM", bits: 8, value: "512 Frame", tone: "primary" }
+            ]
+          },
+          {
+            id: "periph_modules",
+            type: "group",
+            title: "3. 声学采集、功放与 IPS 显示外设电路",
+            place: {
+              rightOf: "esp32_s3_pinout",
+              gap: 68,
+              align: "start"
+            },
+            layout: {
+              type: "flex",
+              direction: "column",
+              gap: 16
+            },
+            style: {
+              tone: "accent",
+              variant: "outlined"
+            },
+            children: [
+              {
+                id: "inmp441",
+                type: "card",
+                icon: "sparkles",
+                title: "INMP441 全向数字 MEMS 麦克风",
+                badge: "24-bit I2S",
+                body: "L/R 引脚接地配置左声道，VDD 并联 100nF 退耦电容紧靠芯片引脚",
+                style: {
+                  tone: "primary",
+                  variant: "soft"
+                }
+              },
+              {
+                id: "max98357a",
+                type: "card",
+                icon: "zap",
+                title: "MAX98357A D类数字音频功放",
+                badge: "3.2W @ 4Ω",
+                body: "无需 MCLK 晶振，GAIN 引脚串 100kΩ 配置 +12dB 增益驱动腔体喇叭",
+                style: {
+                  tone: "success",
+                  variant: "soft"
+                }
+              },
+              {
+                id: "st7789_tft",
+                type: "card",
+                icon: "layers",
+                title: "1.54寸 ST7789 IPS 彩屏 (240×240)",
+                badge: "FSPI DMA",
+                body: "LVGL 双缓冲异步刷屏 + 2N7002 MOSFET 控制 LEDK 呼吸背光",
+                style: {
+                  tone: "accent",
+                  variant: "soft"
+                }
+              }
+            ]
+          }
+        ],
+        connections: [
+          {
+            from: "usb_typec@bottom",
+            to: "ldo_reg@top",
+            label: "VBUS 5V 输入",
+            tone: "warning"
+          },
+          {
+            from: "usb_typec@right",
+            to: "esp32_s3_pinout.cell_3_0@left",
+            label: "D+/D- 90Ω 差分对",
+            tone: "warning"
+          },
+          {
+            from: "ldo_reg@right",
+            to: "esp32_s3_pinout@left",
+            label: "VDD3P3 主电源轨",
+            tone: "success",
+            animation: { type: "pulse" }
+          },
+          {
+            from: "esp32_s3_pinout.cell_4_0@left",
+            to: "opi_psram@right",
+            label: "120MHz Octal Bus",
+            tone: "info",
+            animation: { type: "flow" }
+          },
+          {
+            from: "inmp441@left",
+            to: "esp32_s3_pinout.cell_0_3@right",
+            label: "16kHz PCM 音频流",
+            tone: "primary",
+            animation: { type: "pulse", speed: "fast" }
+          },
+          {
+            from: "esp32_s3_pinout.cell_1_3@right",
+            to: "max98357a@left",
+            label: "I2S1 TTS 播报流",
+            tone: "success"
+          },
+          {
+            from: "esp32_s3_pinout.cell_2_3@right",
+            to: "st7789_tft@left",
+            label: "80MHz SPI 帧传输",
+            tone: "accent",
+            animation: { type: "flow" }
+          },
+          {
+            from: "gdma_reg.field_6@top",
+            to: "esp32_s3_pinout@bottom",
+            label: "GDMA IN_SUC_EOF 中断",
+            tone: "primary"
           }
         ]
       }
