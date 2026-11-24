@@ -3,13 +3,20 @@
  * Automatically inherits CSS variables from custom blogs, VitePress, Astro Starlight, Docusaurus, or Tailwind.
  */
 
-import type {
-  PresetStyle,
-  ResolvedNodeStyle,
-  ResolvedThemeTokens,
-  SemanticStyleSpec,
-  SemanticTone,
-  SurfaceVariant,
+import {
+  coerceFiniteNumber,
+  SEMANTIC_TONES,
+  VALID_ELEVATION_LEVELS,
+  VALID_PRESET_STYLES,
+  VALID_SEMANTIC_TONES,
+  VALID_SURFACE_VARIANTS,
+  type PresetStyle,
+  type ResolvedNodeStyle,
+  type ResolvedThemeTokens,
+  type SemanticStyleSpec,
+  type SemanticTone,
+  type SurfaceVariant,
+  type TonePalette,
 } from "../schema/spec.ts";
 
 interface RGB {
@@ -193,12 +200,22 @@ export function rgbToHex({ r, g, b }: RGB): string {
 }
 
 /**
- * Mix colorA into colorB by weight (0..1 of colorA)
+ * Mix colorA into colorB by weight (0..1 of colorA).
+ * When either color uses CSS variables (SSR mode), emits CSS `color-mix(in srgb, ...)`.
  */
 export function mixColors(colorA: string, colorB: string, weightA: number): string {
+  const w = Math.max(0, Math.min(1, weightA));
+  if (
+    colorA.includes("var(") ||
+    colorB.includes("var(") ||
+    colorA.includes("color-mix(") ||
+    colorB.includes("color-mix(")
+  ) {
+    const pctA = Math.round(w * 100);
+    return `color-mix(in srgb, ${colorA} ${pctA}%, ${colorB})`;
+  }
   const a = parseColorToRgb(colorA, { r: 59, g: 130, b: 246 });
   const b = parseColorToRgb(colorB, { r: 255, g: 255, b: 255 });
-  const w = Math.max(0, Math.min(1, weightA));
   return rgbToHex({
     r: a.r * w + b.r * (1 - w),
     g: a.g * w + b.g * (1 - w),
@@ -209,6 +226,32 @@ export function mixColors(colorA: string, colorB: string, weightA: number): stri
 export function getRelativeLuminance(color: string): number {
   const { r, g, b } = parseColorToRgb(color, { r: 255, g: 255, b: 255 });
   return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+}
+
+/**
+ * Safely normalizes an arbitrary runtime tone value (e.g. LLM output like "blue" or "error")
+ * to a valid SemanticTone, preventing TypeError and prototype key lookups.
+ */
+export function normalizeTone(
+  tone: unknown,
+  fallback: SemanticTone = "neutral"
+): SemanticTone {
+  if (typeof tone === "string" && VALID_SEMANTIC_TONES.has(tone)) {
+    return tone as SemanticTone;
+  }
+  return fallback;
+}
+
+/**
+ * Safely retrieves a TonePalette from a resolved theme, falling back to `neutral`
+ * whenever an unknown or missing tone is passed.
+ */
+export function getTonePalette(
+  theme: ResolvedThemeTokens,
+  tone?: string | SemanticTone
+): TonePalette {
+  const normalized = normalizeTone(tone, "neutral");
+  return theme.colors.tones[normalized] || theme.colors.tones.neutral;
 }
 
 const DEFAULT_LIGHT_TONES: Record<SemanticTone, string> = {
@@ -297,10 +340,11 @@ export function resolveThemeTokens(
     }
   }
 
-  const cssPreset = readFirstCssVar(styles, ["--ill-preset"]) as
-    | PresetStyle
-    | undefined;
-  const activePreset: PresetStyle = overridePreset || cssPreset || "clean";
+  const cssPreset = readFirstCssVar(styles, ["--ill-preset"]);
+  const rawPreset = overridePreset || cssPreset || "clean";
+  const activePreset: PresetStyle = VALID_PRESET_STYLES.has(rawPreset)
+    ? (rawPreset as PresetStyle)
+    : "clean";
   const isBlueprint = activePreset === "blueprint";
 
   const mode: "light" | "dark" = isDark ? "dark" : "light";
@@ -432,7 +476,104 @@ export function resolveThemeTokens(
     geometry: {
       baseRadius: isBlueprint ? 3 : 10,
       preset: activePreset,
-      roughness: overrideRoughness ?? 1.25,
+      roughness: coerceFiniteNumber(overrideRoughness) ?? 1.25,
+    },
+  };
+}
+
+/**
+ * Generates CSS-variable-backed theme tokens for SSR / SSG pre-rendering.
+ * Colors reference `var(--ill-*, ...)` with automatic light/dark fallback variables
+ * so dark-mode pages never flash a light-mode SSR illustration before hydration.
+ */
+export function createSsrThemeTokens(
+  overridePreset?: PresetStyle,
+  overrideRoughness?: number
+): ResolvedThemeTokens {
+  const activePreset: PresetStyle =
+    overridePreset && VALID_PRESET_STYLES.has(overridePreset)
+      ? overridePreset
+      : "clean";
+  const isBlueprint = activePreset === "blueprint";
+
+  const bg = isBlueprint
+    ? "var(--ill-blueprint-bg, var(--_ill-blueprint-bg, #e0f2fe))"
+    : "var(--ill-bg, var(--blog-bg, var(--vp-c-bg, var(--sl-color-bg, var(--_ill-bg, #ffffff)))))";
+  const surface =
+    "var(--ill-surface, var(--blog-card-bg, var(--vp-c-bg-soft, var(--sl-color-bg-nav, var(--_ill-surface, #f8fafc)))))";
+  const surfaceElevated =
+    "var(--ill-surface-elevated, var(--_ill-surface-elevated, #ffffff))";
+  const text =
+    "var(--ill-text, var(--blog-fg, var(--vp-c-text-1, var(--sl-color-text, var(--_ill-text, #0f172a)))))";
+  const textMuted =
+    "var(--ill-text-muted, var(--blog-fg-muted, var(--vp-c-text-2, var(--_ill-text-muted, #64748b))))";
+  const border =
+    "var(--ill-border, var(--blog-border, var(--vp-c-divider, var(--sl-color-hairline, var(--_ill-border, #cbd5e1)))))";
+
+  const toneVarFallbacks: Record<SemanticTone, string> = {
+    neutral: "var(--ill-neutral, var(--blog-neutral, var(--_ill-neutral, #64748b)))",
+    primary:
+      "var(--ill-primary, var(--blog-primary, var(--vp-c-brand-1, var(--sl-color-accent, var(--_ill-primary, #3b82f6)))))",
+    secondary:
+      "var(--ill-secondary, var(--blog-secondary, var(--vp-c-purple-1, var(--_ill-secondary, #8b5cf6))))",
+    accent:
+      "var(--ill-accent, var(--blog-accent, var(--vp-c-indigo-1, var(--_ill-accent, #06b6d4))))",
+    success:
+      "var(--ill-success, var(--blog-success, var(--vp-c-green-1, var(--_ill-success, #10b981))))",
+    warning:
+      "var(--ill-warning, var(--blog-warning, var(--vp-c-yellow-1, var(--_ill-warning, #f59e0b))))",
+    danger:
+      "var(--ill-danger, var(--blog-danger, var(--vp-c-red-1, var(--_ill-danger, #ef4444))))",
+    info: "var(--ill-info, var(--blog-info, var(--_ill-info, #0ea5e9)))",
+  };
+
+  const tones = {} as ResolvedThemeTokens["colors"]["tones"];
+  const softPct = isBlueprint ? 16 : 12;
+  const borderPct = isBlueprint ? 60 : 48;
+
+  for (const tone of SEMANTIC_TONES) {
+    const main = toneVarFallbacks[tone];
+    tones[tone] = {
+      main,
+      softBg: `var(--ill-${tone}-soft-bg, color-mix(in srgb, ${main} ${softPct}%, ${bg}))`,
+      softBorder: `var(--ill-${tone}-soft-border, color-mix(in srgb, ${main} ${borderPct}%, ${bg}))`,
+      filledText:
+        tone === "warning"
+          ? "var(--ill-warning-filled-text, #0f172a)"
+          : `var(--ill-${tone}-filled-text, #ffffff)`,
+    };
+  }
+
+  const fontSans =
+    'ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+  const fontMono =
+    'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace';
+
+  return {
+    mode: "light",
+    colors: {
+      bg,
+      surface,
+      surfaceElevated,
+      codeBg: "var(--ill-code-bg, var(--_ill-code-bg, #0f172a))",
+      codeText: "var(--ill-code-text, #e2e8f0)",
+      text,
+      textMuted,
+      border,
+      gridDot: isBlueprint
+        ? `var(--ill-grid-dot, color-mix(in srgb, ${tones.info.main} 24%, ${bg}))`
+        : `var(--ill-grid-dot, color-mix(in srgb, ${textMuted} 24%, ${bg}))`,
+      tones,
+    },
+    typography: {
+      fontSans: isBlueprint ? fontMono : fontSans,
+      fontMono,
+      baseFontSize: 13,
+    },
+    geometry: {
+      baseRadius: isBlueprint ? 3 : 10,
+      preset: activePreset,
+      roughness: coerceFiniteNumber(overrideRoughness) ?? 1.25,
     },
   };
 }
@@ -443,9 +584,13 @@ export function resolveNodeStyle(
   defaultVariant: SurfaceVariant = "soft",
   defaultTone: SemanticTone = "neutral"
 ): ResolvedNodeStyle {
-  const tone = specStyle?.tone || defaultTone;
-  const variant = specStyle?.variant || defaultVariant;
-  const palette = theme.colors.tones[tone] || theme.colors.tones.neutral;
+  const tone = normalizeTone(specStyle?.tone, defaultTone);
+  const rawVariant = specStyle?.variant;
+  const variant: SurfaceVariant =
+    typeof rawVariant === "string" && VALID_SURFACE_VARIANTS.has(rawVariant)
+      ? (rawVariant as SurfaceVariant)
+      : defaultVariant;
+  const palette = getTonePalette(theme, tone);
 
   let fill = palette.softBg;
   let stroke = palette.softBorder;
@@ -488,17 +633,33 @@ export function resolveNodeStyle(
   }
 
   let radius = theme.geometry.baseRadius;
-  if (typeof specStyle?.radius === "number") {
-    radius = specStyle.radius;
-  } else if (specStyle?.radius === "none") {
+  const rawRadius = specStyle?.radius;
+  if (rawRadius === "none") {
     radius = 0;
-  } else if (specStyle?.radius === "sm") {
+  } else if (rawRadius === "sm") {
     radius = 6;
-  } else if (specStyle?.radius === "lg") {
+  } else if (rawRadius === "md") {
+    radius = theme.geometry.baseRadius;
+  } else if (rawRadius === "lg") {
     radius = 14;
-  } else if (specStyle?.radius === "full") {
+  } else if (rawRadius === "full") {
     radius = 999;
+  } else {
+    const numRadius = coerceFiniteNumber(rawRadius);
+    if (numRadius !== undefined && numRadius >= 0) {
+      radius = numRadius;
+    }
   }
+
+  const rawElevation = specStyle?.elevation;
+  const elevation: "none" | "sm" | "md" =
+    typeof rawElevation === "string" && VALID_ELEVATION_LEVELS.has(rawElevation)
+      ? (rawElevation as "none" | "sm" | "md")
+      : "none";
+
+  const rawOpacity = coerceFiniteNumber(specStyle?.opacity);
+  const opacity =
+    rawOpacity !== undefined ? Math.max(0, Math.min(1, rawOpacity)) : 1;
 
   return {
     tone,
@@ -510,14 +671,98 @@ export function resolveNodeStyle(
     textColor,
     mutedTextColor,
     radius,
-    elevation: specStyle?.elevation || "none",
-    opacity: specStyle?.opacity ?? 1,
-    rough: specStyle?.rough ?? theme.geometry.preset === "sketch",
+    elevation,
+    opacity,
+    rough:
+      typeof specStyle?.rough === "boolean"
+        ? specStyle.rough
+        : theme.geometry.preset === "sketch",
   };
 }
 
+const FINGERPRINT_CSS_VARS = [
+  "--ill-bg",
+  "--blog-bg",
+  "--vp-c-bg",
+  "--sl-color-bg",
+  "--ill-surface",
+  "--blog-card-bg",
+  "--vp-c-bg-soft",
+  "--sl-color-bg-nav",
+  "--ill-text",
+  "--blog-fg",
+  "--vp-c-text-1",
+  "--sl-color-text",
+  "--ill-text-muted",
+  "--blog-fg-muted",
+  "--vp-c-text-2",
+  "--ill-border",
+  "--blog-border",
+  "--vp-c-divider",
+  "--sl-color-hairline",
+  "--ill-preset",
+  "--ill-neutral",
+  "--ill-primary",
+  "--blog-primary",
+  "--vp-c-brand-1",
+  "--sl-color-accent",
+  "--ill-secondary",
+  "--blog-secondary",
+  "--ill-accent",
+  "--blog-accent",
+  "--ill-success",
+  "--blog-success",
+  "--ill-warning",
+  "--blog-warning",
+  "--ill-danger",
+  "--blog-danger",
+  "--ill-info",
+  "--blog-info",
+  "--ill-font-sans",
+  "--ill-font-mono",
+];
+
 /**
- * Watches document & host element for any theme / class / CSS variable changes
+ * Computes a lightweight fingerprint of effective theme mode & key CSS variables
+ * so unrelated DOM class/style mutations (e.g. scroll locks, modals) do not trigger re-compilations.
+ */
+export function computeThemeFingerprint(hostElement?: HTMLElement | null): string {
+  if (typeof window === "undefined" || typeof document === "undefined") {
+    return "headless";
+  }
+
+  const root = document.documentElement;
+  const body = document.body;
+  const styles: CSSStyleDeclaration[] = [];
+  if (hostElement) styles.push(window.getComputedStyle(hostElement));
+  if (body) styles.push(window.getComputedStyle(body));
+  styles.push(window.getComputedStyle(root));
+
+  const themeAttr =
+    hostElement?.getAttribute("data-theme") ||
+    root.getAttribute("data-theme") ||
+    body?.getAttribute("data-theme") ||
+    root.getAttribute("data-color-mode") ||
+    "";
+  const hasDarkClass =
+    root.classList.contains("dark") ||
+    Boolean(body?.classList.contains("dark")) ||
+    Boolean(hostElement?.classList.contains("dark"));
+  const prefersDark =
+    typeof window.matchMedia === "function"
+      ? window.matchMedia("(prefers-color-scheme: dark)").matches
+      : false;
+
+  const parts: string[] = [themeAttr, hasDarkClass ? "1" : "0", prefersDark ? "1" : "0"];
+  for (const name of FINGERPRINT_CSS_VARS) {
+    parts.push(readFirstCssVar(styles, [name]) || "");
+  }
+  return parts.join("|");
+}
+
+/**
+ * Watches document & host element for meaningful theme / CSS variable changes.
+ * Uses theme fingerprinting to ignore unrelated class/style updates and cleans up pending rAF on disconnect.
  */
 export class ThemeObserver {
   private mutationObserver?: MutationObserver;
@@ -525,6 +770,8 @@ export class ThemeObserver {
   private onMediaChange?: () => void;
   private hostElement: HTMLElement;
   private onThemeChange: () => void;
+  private rafId: number | null = null;
+  private lastFingerprint = "";
 
   constructor(
     hostElement: HTMLElement,
@@ -539,12 +786,17 @@ export class ThemeObserver {
       return;
     }
 
-    let rafId: number | null = null;
+    this.lastFingerprint = computeThemeFingerprint(this.hostElement);
+
     const scheduleUpdate = () => {
-      if (rafId !== null) return;
-      rafId = window.requestAnimationFrame(() => {
-        rafId = null;
-        this.onThemeChange();
+      if (this.rafId !== null) return;
+      this.rafId = window.requestAnimationFrame(() => {
+        this.rafId = null;
+        const nextFingerprint = computeThemeFingerprint(this.hostElement);
+        if (nextFingerprint !== this.lastFingerprint) {
+          this.lastFingerprint = nextFingerprint;
+          this.onThemeChange();
+        }
       });
     };
 
@@ -568,9 +820,15 @@ export class ThemeObserver {
   }
 
   disconnect(): void {
+    if (this.rafId !== null && typeof window !== "undefined" && typeof window.cancelAnimationFrame === "function") {
+      window.cancelAnimationFrame(this.rafId);
+      this.rafId = null;
+    }
     this.mutationObserver?.disconnect();
+    this.mutationObserver = undefined;
     if (this.mediaQuery && this.onMediaChange) {
       this.mediaQuery.removeEventListener("change", this.onMediaChange);
+      this.onMediaChange = undefined;
     }
   }
 }

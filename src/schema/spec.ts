@@ -1,5 +1,5 @@
 /**
- * @ai-illustrate/core - Schema & SceneGraph Type Definitions
+ * millus - Schema & SceneGraph Type Definitions
  */
 
 export type SemanticTone =
@@ -457,10 +457,10 @@ export interface SceneGraph {
 }
 
 // ============================================================================
-// Zero-Dependency Loose JSON & YAML Spec Parser + Semantic Validator
+// Shared Enum Constants & Sanitization Helpers (Single Source of Truth)
 // ============================================================================
 
-const VALID_ELEMENT_TYPES = new Set<string>([
+export const ELEMENT_TYPES = [
   "rect",
   "diamond",
   "circle",
@@ -481,123 +481,398 @@ const VALID_ELEMENT_TYPES = new Set<string>([
   "callout",
   "bitfield",
   "sequence",
-]);
+] as const;
+
+export const VALID_ELEMENT_TYPES: ReadonlySet<string> = new Set<string>(
+  ELEMENT_TYPES
+);
+
+export const SEMANTIC_TONES: readonly SemanticTone[] = [
+  "neutral",
+  "primary",
+  "secondary",
+  "accent",
+  "success",
+  "warning",
+  "danger",
+  "info",
+] as const;
+
+export const VALID_SEMANTIC_TONES: ReadonlySet<string> = new Set<string>(
+  SEMANTIC_TONES
+);
+
+export const SURFACE_VARIANTS: readonly SurfaceVariant[] = [
+  "soft",
+  "filled",
+  "outlined",
+  "dashed",
+  "ghost",
+] as const;
+
+export const VALID_SURFACE_VARIANTS: ReadonlySet<string> = new Set<string>(
+  SURFACE_VARIANTS
+);
+
+export const PRESET_STYLES: readonly PresetStyle[] = [
+  "clean",
+  "sketch",
+  "blueprint",
+] as const;
+
+export const VALID_PRESET_STYLES: ReadonlySet<string> = new Set<string>(
+  PRESET_STYLES
+);
+
+export const ELEVATION_LEVELS = ["none", "sm", "md"] as const;
+export const VALID_ELEVATION_LEVELS: ReadonlySet<string> = new Set<string>(
+  ELEVATION_LEVELS
+);
+
+export const ROUTING_MODES = ["orthogonal", "curved", "straight"] as const;
+export const VALID_ROUTING_MODES: ReadonlySet<string> = new Set<string>(
+  ROUTING_MODES
+);
+
+export const STROKE_STYLES = ["solid", "dashed", "dotted"] as const;
+export const VALID_STROKE_STYLES: ReadonlySet<string> = new Set<string>(
+  STROKE_STYLES
+);
+
+export const STROKE_WIDTHS = ["thin", "normal", "thick"] as const;
+export const VALID_STROKE_WIDTHS: ReadonlySet<string> = new Set<string>(
+  STROKE_WIDTHS
+);
+
+export const MARKER_TYPES = ["none", "arrow", "dot", "diamond"] as const;
+export const VALID_MARKER_TYPES: ReadonlySet<string> = new Set<string>(
+  MARKER_TYPES
+);
+
+export const CANVAS_BACKGROUNDS = [
+  "transparent",
+  "surface",
+  "dots",
+  "grid",
+] as const;
+export const VALID_CANVAS_BACKGROUNDS: ReadonlySet<string> = new Set<string>(
+  CANVAS_BACKGROUNDS
+);
+
+export const CALLOUT_SIDES = ["top", "bottom", "left", "right"] as const;
+export const VALID_CALLOUT_SIDES: ReadonlySet<string> = new Set<string>(
+  CALLOUT_SIDES
+);
+
+export const LABEL_SIDES = [
+  "center",
+  "top",
+  "bottom",
+  "left",
+  "right",
+] as const;
+export const VALID_LABEL_SIDES: ReadonlySet<string> = new Set<string>(
+  LABEL_SIDES
+);
+
+export const ANIMATION_TYPES = [
+  "none",
+  "flow",
+  "pulse",
+  "bidirectional",
+] as const;
+export const VALID_ANIMATION_TYPES: ReadonlySet<string> = new Set<string>(
+  ANIMATION_TYPES
+);
+
+export const ANIMATION_SPEEDS = ["slow", "normal", "fast"] as const;
+export const VALID_ANIMATION_SPEEDS: ReadonlySet<string> = new Set<string>(
+  ANIMATION_SPEEDS
+);
+
+export const SEQUENCE_MESSAGE_TYPES = ["sync", "async", "reply"] as const;
+export const VALID_SEQUENCE_MESSAGE_TYPES: ReadonlySet<string> =
+  new Set<string>(SEQUENCE_MESSAGE_TYPES);
+
+export const ELEMENT_ID_PATTERN = /^[A-Za-z_][\w-]*$/;
+
+const SVG_PATH_D_WHITELIST = /^[MmLlHhVvCcSsQqTtAaZz0-9\s.,+\-eE]+$/;
+
+/**
+ * Safely coerces an unknown value to a finite number, rejecting NaN, Infinity,
+ * non-numeric strings, booleans, null, and objects.
+ */
+export function coerceFiniteNumber(val: unknown): number | undefined {
+  if (typeof val === "number") {
+    return Number.isFinite(val) ? val : undefined;
+  }
+  if (typeof val === "string" && val.trim() !== "") {
+    const n = Number(val);
+    return Number.isFinite(n) ? n : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Validates SVG path `d` attribute against a strict character whitelist
+ * (SVG path command letters, digits, whitespace, and `.,+-eE`).
+ * Returns empty string if any disallowed character is present.
+ */
+export function sanitizeSvgPathD(d: unknown): string {
+  if (typeof d !== "string") return "";
+  const trimmed = d.trim();
+  if (!trimmed) return "";
+  return SVG_PATH_D_WHITELIST.test(trimmed) ? trimmed : "";
+}
+
+// ============================================================================
+// Zero-Dependency Loose JSON & YAML Spec Parser + Semantic Validator
+// ============================================================================
+
+type LooseJsonToken =
+  | { kind: "string"; value: string }
+  | { kind: "ident"; value: string }
+  | { kind: "punct"; value: "{" | "}" | "[" | "]" | ":" | "," }
+  | { kind: "ws"; value: string }
+  | { kind: "other"; value: string };
 
 /**
  * Normalizes loose LLM-generated JSON (strips // and /* comments, single quotes,
- * unquoted object keys, and trailing commas) into strict JSON.
+ * unquoted object keys, and trailing commas) into strict JSON without ever mutating
+ * content inside string literals.
  */
 export function normalizeLooseJson(raw: string): string {
-  let out = "";
+  const tokens: LooseJsonToken[] = [];
   let i = 0;
   const n = raw.length;
-  let inDouble = false;
-  let inSingle = false;
 
   while (i < n) {
     const ch = raw[i];
     const next = raw[i + 1];
 
-    if (inDouble) {
-      if (ch === "\\" && i + 1 < n) {
-        out += ch + raw[i + 1];
-        i += 2;
-        continue;
-      }
-      if (ch === '"') {
-        inDouble = false;
-        out += ch;
-        i++;
-        continue;
-      }
-      if (ch === "\n") {
-        out += "\\n";
-        i++;
-        continue;
-      }
-      if (ch === "\r") {
-        i++;
-        continue;
-      }
-      out += ch;
+    // Whitespace
+    if (ch === " " || ch === "\t" || ch === "\n" || ch === "\r") {
+      const start = i;
       i++;
+      while (
+        i < n &&
+        (raw[i] === " " ||
+          raw[i] === "\t" ||
+          raw[i] === "\n" ||
+          raw[i] === "\r")
+      ) {
+        i++;
+      }
+      tokens.push({ kind: "ws", value: raw.slice(start, i) });
       continue;
     }
 
-    if (inSingle) {
-      if (ch === "\\" && i + 1 < n) {
-        const esc = raw[i + 1];
-        if (esc === "'") {
-          out += "'";
-        } else {
-          out += "\\" + esc;
-        }
-        i += 2;
-        continue;
-      }
-      if (ch === "'") {
-        inSingle = false;
-        out += '"';
-        i++;
-        continue;
-      }
-      if (ch === '"') {
-        out += '\\"';
-        i++;
-        continue;
-      }
-      if (ch === "\n") {
-        out += "\\n";
-        i++;
-        continue;
-      }
-      if (ch === "\r") {
-        i++;
-        continue;
-      }
-      out += ch;
-      i++;
-      continue;
-    }
-
-    // Outside strings: check comments
+    // Line comments //
     if (ch === "/" && next === "/") {
       i += 2;
       while (i < n && raw[i] !== "\n") i++;
       continue;
     }
+
+    // Block comments /* ... */
     if (ch === "/" && next === "*") {
       i += 2;
       while (i < n && !(raw[i] === "*" && raw[i + 1] === "/")) i++;
-      i += 2;
+      i = Math.min(n, i + 2);
       continue;
     }
 
+    // Double-quoted string literal
     if (ch === '"') {
-      inDouble = true;
-      out += ch;
+      let str = '"';
       i++;
+      while (i < n) {
+        const c = raw[i];
+        if (c === "\\" && i + 1 < n) {
+          str += c + raw[i + 1];
+          i += 2;
+          continue;
+        }
+        if (c === '"') {
+          str += '"';
+          i++;
+          break;
+        }
+        if (c === "\n") {
+          str += "\\n";
+          i++;
+          continue;
+        }
+        if (c === "\r") {
+          i++;
+          continue;
+        }
+        if (c === "\t") {
+          str += "\\t";
+          i++;
+          continue;
+        }
+        str += c;
+        i++;
+      }
+      tokens.push({ kind: "string", value: str });
       continue;
     }
+
+    // Single-quoted string literal -> normalized double-quoted JSON string
     if (ch === "'") {
-      inSingle = true;
-      out += '"';
+      let str = '"';
+      i++;
+      while (i < n) {
+        const c = raw[i];
+        if (c === "\\" && i + 1 < n) {
+          const esc = raw[i + 1];
+          if (esc === "'") {
+            str += "'";
+          } else {
+            str += "\\" + esc;
+          }
+          i += 2;
+          continue;
+        }
+        if (c === "'") {
+          str += '"';
+          i++;
+          break;
+        }
+        if (c === '"') {
+          str += '\\"';
+          i++;
+          continue;
+        }
+        if (c === "\n") {
+          str += "\\n";
+          i++;
+          continue;
+        }
+        if (c === "\r") {
+          i++;
+          continue;
+        }
+        if (c === "\t") {
+          str += "\\t";
+          i++;
+          continue;
+        }
+        str += c;
+        i++;
+      }
+      tokens.push({ kind: "string", value: str });
+      continue;
+    }
+
+    // Structural punctuation
+    if (
+      ch === "{" ||
+      ch === "}" ||
+      ch === "[" ||
+      ch === "]" ||
+      ch === ":" ||
+      ch === ","
+    ) {
+      tokens.push({ kind: "punct", value: ch });
       i++;
       continue;
     }
 
-    out += ch;
+    // Unquoted identifier (object key or keyword like true/false/null)
+    if (/[A-Za-z_$]/.test(ch)) {
+      const start = i;
+      i++;
+      while (i < n && /[A-Za-z0-9_$-]/.test(raw[i])) {
+        i++;
+      }
+      tokens.push({ kind: "ident", value: raw.slice(start, i) });
+      continue;
+    }
+
+    // Other literal characters (numbers, etc.)
+    const start = i;
     i++;
+    while (
+      i < n &&
+      !/[\s{}\[\]:,"'/]/.test(raw[i])
+    ) {
+      i++;
+    }
+    tokens.push({ kind: "other", value: raw.slice(start, i) });
   }
 
-  // Quote unquoted object keys: { key: ... or , key: ...
-  const withQuotedKeys = out.replace(
-    /([{,]\s*)([A-Za-z_][A-Za-z0-9_-]*)(\s*:)/g,
-    '$1"$2"$3'
-  );
+  const nextNonWs = (fromIdx: number): LooseJsonToken | undefined => {
+    for (let k = fromIdx; k < tokens.length; k++) {
+      if (tokens[k].kind !== "ws") return tokens[k];
+    }
+    return undefined;
+  };
 
-  // Strip trailing commas before } or ]
-  return withQuotedKeys.replace(/,(\s*[}\]])/g, "$1");
+  let out = "";
+  let prevSig: LooseJsonToken | undefined;
+  const containerStack: Array<"{" | "["> = [];
+
+  for (let idx = 0; idx < tokens.length; idx++) {
+    const tok = tokens[idx];
+    if (tok.kind === "ws") {
+      out += tok.value;
+      continue;
+    }
+
+    if (tok.kind === "punct") {
+      if (tok.value === "{" || tok.value === "[") {
+        containerStack.push(tok.value);
+        out += tok.value;
+        prevSig = tok;
+        continue;
+      }
+      if (tok.value === "}" || tok.value === "]") {
+        containerStack.pop();
+        out += tok.value;
+        prevSig = tok;
+        continue;
+      }
+      if (tok.value === ",") {
+        const nxt = nextNonWs(idx + 1);
+        if (nxt && nxt.kind === "punct" && (nxt.value === "}" || nxt.value === "]")) {
+          // Drop trailing comma outside strings
+          continue;
+        }
+        out += ",";
+        prevSig = tok;
+        continue;
+      }
+      out += tok.value;
+      prevSig = tok;
+      continue;
+    }
+
+    if (tok.kind === "ident") {
+      const inObject =
+        containerStack.length === 0 ||
+        containerStack[containerStack.length - 1] === "{";
+      const afterKeyDelim =
+        prevSig?.kind === "punct" &&
+        (prevSig.value === "{" || prevSig.value === ",");
+      const nxt = nextNonWs(idx + 1);
+      const beforeColon = nxt?.kind === "punct" && nxt.value === ":";
+
+      if (inObject && afterKeyDelim && beforeColon) {
+        out += `"${tok.value}"`;
+      } else {
+        out += tok.value;
+      }
+      prevSig = tok;
+      continue;
+    }
+
+    out += tok.value;
+    prevSig = tok;
+  }
+
+  return out;
 }
 
 function stripInlineYamlComment(raw: string): string {
@@ -780,15 +1055,29 @@ function parseYamlSubset(raw: string): unknown {
         if (kv) {
           const itemObj: Record<string, unknown> = {};
           const [k, v] = kv;
+          const dashOffset = l.text.length - l.text.slice(1).trimStart().length;
+          const keyIndent = baseIndent + dashOffset;
           idx++;
           if (v === "|" || v === "|-" || v === ">" || v === ">-") {
-            const blk = parseBlockScalar(idx, baseIndent + 1, v.startsWith(">"));
+            const blk = parseBlockScalar(idx, keyIndent, v.startsWith(">"));
             itemObj[k] = blk.value;
             idx = blk.nextIdx;
           } else if (v === "") {
-            const sub = parseNode(idx, baseIndent + 2);
-            itemObj[k] = sub.value;
-            idx = sub.nextIdx;
+            const peekIdx = nextNonEmpty(idx);
+            if (
+              peekIdx < lines.length &&
+              lines[peekIdx].indent === keyIndent &&
+              (lines[peekIdx].text === "-" ||
+                lines[peekIdx].text.startsWith("- "))
+            ) {
+              const sub = parseNode(peekIdx, keyIndent);
+              itemObj[k] = sub.value;
+              idx = sub.nextIdx;
+            } else {
+              const sub = parseNode(idx, keyIndent + 1);
+              itemObj[k] = sub.value;
+              idx = sub.nextIdx;
+            }
           } else {
             itemObj[k] = parseYamlScalar(v);
           }
@@ -844,9 +1133,20 @@ function parseYamlSubset(raw: string): unknown {
         target[key] = blk.value;
         idx = blk.nextIdx;
       } else if (val === "") {
-        const sub = parseNode(idx, baseIndent + 1);
-        target[key] = sub.value;
-        idx = sub.nextIdx;
+        const peekIdx = nextNonEmpty(idx);
+        if (
+          peekIdx < lines.length &&
+          lines[peekIdx].indent === baseIndent &&
+          (lines[peekIdx].text === "-" || lines[peekIdx].text.startsWith("- "))
+        ) {
+          const sub = parseNode(peekIdx, baseIndent);
+          target[key] = sub.value;
+          idx = sub.nextIdx;
+        } else {
+          const sub = parseNode(idx, baseIndent + 1);
+          target[key] = sub.value;
+          idx = sub.nextIdx;
+        }
       } else {
         target[key] = parseYamlScalar(val);
       }
@@ -924,14 +1224,16 @@ function suggestClosestId(
 }
 
 /**
- * Runtime semantic validator with descriptive errors & fuzzy ID suggestions for LLM self-repair
+ * Runtime semantic validator with descriptive errors, enum warnings, & fuzzy ID suggestions for LLM self-repair
  */
 export function validateIllustrationSpec(input: unknown): {
   valid: boolean;
   errors: string[];
+  warnings: string[];
   spec?: IllustrationSpec;
 } {
   const errors: string[] = [];
+  const warnings: string[] = [];
   let parsedInput = input;
 
   if (typeof input === "string") {
@@ -941,16 +1243,46 @@ export function validateIllustrationSpec(input: unknown): {
       return {
         valid: false,
         errors: [`Failed to parse spec text: ${(err as Error).message}`],
+        warnings,
       };
     }
   }
 
-  if (!parsedInput || typeof parsedInput !== "object") {
-    return { valid: false, errors: ["Root spec must be a JSON/YAML object."] };
+  if (!parsedInput || typeof parsedInput !== "object" || Array.isArray(parsedInput)) {
+    return {
+      valid: false,
+      errors: ["Root spec must be a JSON/YAML object."],
+      warnings,
+    };
   }
+
+  const checkEnum = (
+    val: unknown,
+    validSet: ReadonlySet<string>,
+    fieldPath: string
+  ): void => {
+    if (val === undefined) return;
+    if (typeof val !== "string" || !validSet.has(val)) {
+      const suggestion = suggestClosestId(String(val), validSet);
+      const hint = suggestion ? ` Did you mean "${suggestion}"?` : "";
+      warnings.push(
+        `${fieldPath} has unknown value "${String(val)}". Valid values: ${Array.from(validSet).join(", ")}.${hint}`
+      );
+    }
+  };
 
   const obj = parsedInput as Record<string, unknown>;
   const knownNodeIds = new Set<string>();
+  const calloutTargets: Array<{ path: string; target: string }> = [];
+
+  if (obj.canvas && typeof obj.canvas === "object") {
+    const canvas = obj.canvas as Record<string, unknown>;
+    checkEnum(canvas.background, VALID_CANVAS_BACKGROUNDS, "canvas.background");
+  }
+  if (obj.style && typeof obj.style === "object") {
+    const style = obj.style as Record<string, unknown>;
+    checkEnum(style.preset, VALID_PRESET_STYLES, "style.preset");
+  }
 
   const validateElementTree = (
     elements: unknown[],
@@ -960,7 +1292,7 @@ export function validateIllustrationSpec(input: unknown): {
 
     elements.forEach((el, idx) => {
       const itemPath = `${pathPrefix}[${idx}]`;
-      if (!el || typeof el !== "object") {
+      if (!el || typeof el !== "object" || Array.isArray(el)) {
         errors.push(`${itemPath} must be an object.`);
         return;
       }
@@ -970,51 +1302,140 @@ export function validateIllustrationSpec(input: unknown): {
         return;
       }
       if (!VALID_ELEMENT_TYPES.has(typed.type)) {
+        const suggestion = suggestClosestId(typed.type, VALID_ELEMENT_TYPES);
+        const hint = suggestion ? ` Did you mean "${suggestion}"?` : "";
         errors.push(
-          `${itemPath} has unknown type "${typed.type}". Valid types: ${Array.from(VALID_ELEMENT_TYPES).join(", ")}.`
+          `${itemPath} has unknown type "${typed.type}". Valid types: ${Array.from(VALID_ELEMENT_TYPES).join(", ")}.${hint}`
         );
       }
-      if (typeof typed.id === "string" && typed.id.trim()) {
-        const id = typed.id.trim();
-        if (knownNodeIds.has(id)) {
-          errors.push(`${itemPath} has duplicate element id "${id}".`);
+
+      if (typed.id !== undefined) {
+        if (typeof typed.id !== "string" || !typed.id.trim()) {
+          errors.push(`${itemPath}.id must be a non-empty string.`);
+        } else {
+          const id = typed.id.trim();
+          if (!ELEMENT_ID_PATTERN.test(id)) {
+            errors.push(
+              `${itemPath} has invalid element id "${id}". IDs must match /^[A-Za-z_][\\w-]*$/ (no ".", "@", or spaces).`
+            );
+          } else {
+            if (knownNodeIds.has(id)) {
+              errors.push(`${itemPath} has duplicate element id "${id}".`);
+            }
+            knownNodeIds.add(id);
+            siblingIds.add(id);
+          }
         }
-        knownNodeIds.add(id);
-        siblingIds.add(id);
       }
+
+      if (typed.style && typeof typed.style === "object") {
+        const st = typed.style as Record<string, unknown>;
+        checkEnum(st.tone, VALID_SEMANTIC_TONES, `${itemPath}.style.tone`);
+        checkEnum(st.variant, VALID_SURFACE_VARIANTS, `${itemPath}.style.variant`);
+        checkEnum(st.elevation, VALID_ELEVATION_LEVELS, `${itemPath}.style.elevation`);
+      }
+
+      // Element-specific enum checks & recursive callout collection
+      if (typed.type === "callout") {
+        checkEnum(typed.side, VALID_CALLOUT_SIDES, `${itemPath}.side`);
+        if (typeof typed.target === "string" && typed.target.trim()) {
+          calloutTargets.push({ path: itemPath, target: typed.target });
+        }
+      } else if (typed.type === "table" && Array.isArray(typed.rows)) {
+        typed.rows.forEach((row, rIdx) => {
+          if (!Array.isArray(row)) return;
+          row.forEach((cell, cIdx) => {
+            if (cell && typeof cell === "object") {
+              checkEnum(
+                (cell as Record<string, unknown>).tone,
+                VALID_SEMANTIC_TONES,
+                `${itemPath}.rows[${rIdx}][${cIdx}].tone`
+              );
+            }
+          });
+        });
+      } else if (typed.type === "terminal" && Array.isArray(typed.lines)) {
+        typed.lines.forEach((line, lIdx) => {
+          if (line && typeof line === "object") {
+            checkEnum(
+              (line as Record<string, unknown>).tone,
+              VALID_SEMANTIC_TONES,
+              `${itemPath}.lines[${lIdx}].tone`
+            );
+          }
+        });
+      } else if (typed.type === "bitfield" && Array.isArray(typed.fields)) {
+        typed.fields.forEach((field, fIdx) => {
+          if (field && typeof field === "object") {
+            checkEnum(
+              (field as Record<string, unknown>).tone,
+              VALID_SEMANTIC_TONES,
+              `${itemPath}.fields[${fIdx}].tone`
+            );
+          }
+        });
+      } else if (typed.type === "sequence") {
+        if (Array.isArray(typed.actors)) {
+          typed.actors.forEach((actor, aIdx) => {
+            if (actor && typeof actor === "object") {
+              checkEnum(
+                (actor as Record<string, unknown>).tone,
+                VALID_SEMANTIC_TONES,
+                `${itemPath}.actors[${aIdx}].tone`
+              );
+            }
+          });
+        }
+        if (Array.isArray(typed.messages)) {
+          typed.messages.forEach((msg, mIdx) => {
+            if (msg && typeof msg === "object") {
+              const m = msg as Record<string, unknown>;
+              checkEnum(
+                m.tone,
+                VALID_SEMANTIC_TONES,
+                `${itemPath}.messages[${mIdx}].tone`
+              );
+              checkEnum(
+                m.type,
+                VALID_SEQUENCE_MESSAGE_TYPES,
+                `${itemPath}.messages[${mIdx}].type`
+              );
+            }
+          });
+        }
+      }
+
       if (Array.isArray(typed.children)) {
         validateElementTree(typed.children, `${itemPath}.children`);
       }
     });
 
-    // Check sibling relative `place` references within this container
-    if (siblingIds.size > 0) {
-      elements.forEach((el, idx) => {
-        if (!el || typeof el !== "object") return;
-        const typed = el as Record<string, unknown>;
-        const selfId = typeof typed.id === "string" ? typed.id.trim() : undefined;
-        const place = typed.place as Record<string, unknown> | undefined;
-        if (!place || typeof place !== "object") return;
+    // Check sibling relative `place` references within this container (even if no sibling has an id)
+    elements.forEach((el, idx) => {
+      if (!el || typeof el !== "object") return;
+      const typed = el as Record<string, unknown>;
+      const selfId = typeof typed.id === "string" ? typed.id.trim() : undefined;
+      const place = typed.place as Record<string, unknown> | undefined;
+      if (!place || typeof place !== "object") return;
 
-        for (const dirKey of ["rightOf", "leftOf", "below", "above"] as const) {
-          const refVal = place[dirKey];
-          if (typeof refVal === "string" && refVal.trim()) {
-            const refId = refVal.trim();
-            if (selfId && refId === selfId) {
-              errors.push(
-                `${pathPrefix}[${idx}].place.${dirKey} cannot reference itself ("${selfId}").`
-              );
-            } else if (!siblingIds.has(refId)) {
-              const suggestion = suggestClosestId(refId, siblingIds);
-              const hint = suggestion ? ` Did you mean "${suggestion}"?` : "";
-              errors.push(
-                `${pathPrefix}[${idx}].place.${dirKey} references unknown sibling id "${refId}".${hint}`
-              );
-            }
+      for (const dirKey of ["rightOf", "leftOf", "below", "above"] as const) {
+        const refVal = place[dirKey];
+        if (typeof refVal === "string" && refVal.trim()) {
+          const refId = refVal.trim();
+          if (selfId && refId === selfId) {
+            errors.push(
+              `${pathPrefix}[${idx}].place.${dirKey} cannot reference itself ("${selfId}").`
+            );
+          } else if (!siblingIds.has(refId)) {
+            const suggestion = suggestClosestId(refId, siblingIds);
+            const hint = suggestion ? ` Did you mean "${suggestion}"?` : "";
+            errors.push(
+              `${pathPrefix}[${idx}].place.${dirKey} references unknown sibling id "${refId}".${hint}`
+            );
           }
         }
-      });
-    }
+      }
+    });
   };
 
   if (!Array.isArray(obj.elements)) {
@@ -1022,35 +1443,25 @@ export function validateIllustrationSpec(input: unknown): {
   } else {
     validateElementTree(obj.elements, "elements");
 
-    // Check callout target references
-    if (knownNodeIds.size > 0) {
-      obj.elements.forEach((el, idx) => {
-        if (!el || typeof el !== "object") return;
-        const typed = el as Record<string, unknown>;
-        if (
-          typed.type === "callout" &&
-          typeof typed.target === "string" &&
-          typed.target.trim()
-        ) {
-          const baseTarget = typed.target.split("@")[0].split(".")[0].trim();
-          if (!knownNodeIds.has(baseTarget)) {
-            const suggestion = suggestClosestId(baseTarget, knownNodeIds);
-            const hint = suggestion ? ` Did you mean "${suggestion}"?` : "";
-            errors.push(
-              `elements[${idx}].target references unknown element id "${baseTarget}".${hint}`
-            );
-          }
-        }
-      });
+    // Check ALL callout target references (top-level and nested inside groups/windows/cards)
+    for (const c of calloutTargets) {
+      const baseTarget = c.target.split("@")[0].split(".")[0].trim();
+      if (!knownNodeIds.has(baseTarget)) {
+        const suggestion = suggestClosestId(baseTarget, knownNodeIds);
+        const hint = suggestion ? ` Did you mean "${suggestion}"?` : "";
+        errors.push(
+          `${c.path}.target references unknown element id "${baseTarget}".${hint}`
+        );
+      }
     }
   }
 
   if (obj.connections !== undefined) {
     if (!Array.isArray(obj.connections)) {
       errors.push("'connections' must be an array when provided.");
-    } else if (knownNodeIds.size > 0) {
+    } else {
       obj.connections.forEach((conn, idx) => {
-        if (!conn || typeof conn !== "object") {
+        if (!conn || typeof conn !== "object" || Array.isArray(conn)) {
           errors.push(`connections[${idx}] must be an object.`);
           return;
         }
@@ -1072,6 +1483,47 @@ export function validateIllustrationSpec(input: unknown): {
             );
           }
         }
+
+        checkEnum(typed.routing, VALID_ROUTING_MODES, `connections[${idx}].routing`);
+        checkEnum(typed.tone, VALID_SEMANTIC_TONES, `connections[${idx}].tone`);
+        checkEnum(
+          typed.strokeStyle,
+          VALID_STROKE_STYLES,
+          `connections[${idx}].strokeStyle`
+        );
+        checkEnum(
+          typed.strokeWidth,
+          VALID_STROKE_WIDTHS,
+          `connections[${idx}].strokeWidth`
+        );
+        checkEnum(
+          typed.startMarker,
+          VALID_MARKER_TYPES,
+          `connections[${idx}].startMarker`
+        );
+        checkEnum(
+          typed.endMarker,
+          VALID_MARKER_TYPES,
+          `connections[${idx}].endMarker`
+        );
+        checkEnum(
+          typed.labelSide,
+          VALID_LABEL_SIDES,
+          `connections[${idx}].labelSide`
+        );
+        if (typed.animation && typeof typed.animation === "object") {
+          const anim = typed.animation as Record<string, unknown>;
+          checkEnum(
+            anim.type,
+            VALID_ANIMATION_TYPES,
+            `connections[${idx}].animation.type`
+          );
+          checkEnum(
+            anim.speed,
+            VALID_ANIMATION_SPEEDS,
+            `connections[${idx}].animation.speed`
+          );
+        }
       });
     }
   }
@@ -1079,6 +1531,7 @@ export function validateIllustrationSpec(input: unknown): {
   return {
     valid: errors.length === 0,
     errors,
+    warnings,
     spec:
       errors.length === 0
         ? (parsedInput as unknown as IllustrationSpec)

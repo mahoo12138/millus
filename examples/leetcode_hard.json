@@ -1,0 +1,211 @@
+{
+  "title": "LeetCode 42. 接雨水 (Hard) — 单调递减栈按层水平消解过程图解",
+  "canvas": {
+    "background": "dots",
+    "padding": 36
+  },
+  "elements": [
+    {
+      "id": "trap_code",
+      "type": "code-block",
+      "title": "trap_rain_water.ts — O(n) 单调递减栈解法",
+      "lang": "ts",
+      "highlightLines": [
+        2,
+        5,
+        6,
+        7
+      ],
+      "code": "while (stk.length && h[i] > h[stk[stk.length - 1]]) {\n  const bot = stk.pop()!;           // 1. 弹出凹槽谷底下标\n  if (!stk.length) break;           // 左侧无挡板则无法蓄水\n  const left = stk[stk.length - 1]; // 2. 栈顶即为左高墙下标\n  const w = i - left - 1;           // 3. 水平蓄水跨度 w\n  const dh = Math.min(h[left], h[i]) - h[bot]; // 4. 木桶水深 dh\n  ans += w * dh;                    // 5. 按层累加矩形雨水面积\n}",
+      "style": {
+        "tone": "primary",
+        "elevation": "sm"
+      }
+    },
+    {
+      "id": "note_wood",
+      "type": "callout",
+      "text": "核心不变量：栈内下标高度严格单调递减；一旦遇到更高右墙 h[i]，即刻结算左右墙夹住的水平雨水层！",
+      "target": "trap_code.line_6",
+      "side": "top",
+      "style": {
+        "tone": "warning"
+      }
+    },
+    {
+      "id": "mono_stk",
+      "type": "queue",
+      "label": "单调递减栈 stk (存储柱子下标)",
+      "sublabel": "栈底 [ idx=1(h=2), idx=2(h=1), idx=3(h=0) ] 栈顶 ← i=4(h=3) 触发连续弹栈",
+      "place": {
+        "below": "trap_code",
+        "gap": 44,
+        "align": "start"
+      },
+      "style": {
+        "tone": "accent",
+        "variant": "soft"
+      }
+    },
+    {
+      "id": "trace_matrix",
+      "type": "table",
+      "title": "当扫描至右墙 i = 4 (height[4] = 3) 时的两轮弹栈消解轨迹",
+      "place": {
+        "rightOf": "trap_code",
+        "gap": 68,
+        "align": "start"
+      },
+      "headers": [
+        "消解轮次",
+        "弹出谷底 bot",
+        "左高墙 left",
+        "水平跨度 w",
+        "净水深 dh",
+        "本层蓄水量"
+      ],
+      "rows": [
+        [
+          "第 1 轮弹栈",
+          {
+            "text": "idx=3 (h=0)",
+            "tone": "warning"
+          },
+          "idx=2 (h=1)",
+          "4 - 2 - 1 = 1",
+          "min(1, 3) - 0 = 1",
+          {
+            "text": "+1 (总计 1)",
+            "tone": "success"
+          }
+        ],
+        [
+          "第 2 轮弹栈",
+          {
+            "text": "idx=2 (h=1)",
+            "tone": "warning"
+          },
+          "idx=1 (h=2)",
+          "4 - 1 - 1 = 2",
+          "min(2, 3) - 1 = 1",
+          {
+            "text": "+2 (总计 3)",
+            "tone": "success"
+          }
+        ],
+        [
+          "第 3 轮弹栈",
+          {
+            "text": "idx=1 (h=2)",
+            "tone": "neutral"
+          },
+          "栈空 break",
+          "无左墙挡板",
+          "0 (左侧溢出)",
+          {
+            "text": "+0 (i=4 入栈)",
+            "tone": "info"
+          }
+        ]
+      ],
+      "style": {
+        "tone": "primary",
+        "variant": "outlined"
+      }
+    },
+    {
+      "id": "elevation_bits",
+      "type": "bitfield",
+      "title": "柱高数组 height[0..5] 扫描窗口与水位填平状态",
+      "totalBits": 48,
+      "place": {
+        "below": "trace_matrix",
+        "gap": 44,
+        "align": "start"
+      },
+      "fields": [
+        {
+          "name": "i=0 (h=0)",
+          "bits": 8,
+          "value": "无左墙",
+          "tone": "neutral"
+        },
+        {
+          "name": "i=1 (h=2)",
+          "bits": 8,
+          "value": "左高墙",
+          "tone": "primary"
+        },
+        {
+          "name": "i=2 (h=1)",
+          "bits": 8,
+          "value": "蓄水+1",
+          "tone": "info"
+        },
+        {
+          "name": "i=3 (h=0)",
+          "bits": 8,
+          "value": "蓄水+2",
+          "tone": "info"
+        },
+        {
+          "name": "i=4 (h=3)",
+          "bits": 8,
+          "value": "当前右墙",
+          "tone": "success"
+        },
+        {
+          "name": "i=5 (h=1)",
+          "bits": 8,
+          "value": "待扫描",
+          "tone": "neutral"
+        }
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "from": "trap_code.line_2@bottom",
+      "to": "mono_stk@top",
+      "label": "stk.pop() 弹出谷底",
+      "tone": "warning",
+      "animation": {
+        "type": "pulse"
+      }
+    },
+    {
+      "from": "trap_code.line_5@right",
+      "to": "trace_matrix.cell_0_3@left",
+      "label": "计算跨度 w",
+      "tone": "primary"
+    },
+    {
+      "from": "trap_code.line_6@right",
+      "to": "trace_matrix.cell_1_4@left",
+      "label": "木桶高差 dh",
+      "tone": "info"
+    },
+    {
+      "from": "trap_code.line_7@right",
+      "to": "trace_matrix.cell_1_5@left",
+      "label": "累加 w × dh",
+      "tone": "success",
+      "animation": {
+        "type": "pulse",
+        "speed": "fast"
+      }
+    },
+    {
+      "from": "mono_stk@right",
+      "to": "elevation_bits@left",
+      "label": "维护单调递减栈",
+      "tone": "accent"
+    },
+    {
+      "from": "elevation_bits.field_5@top",
+      "to": "trace_matrix.cell_1_5@bottom",
+      "label": "右墙 h[4]=3 触发结算",
+      "tone": "success"
+    }
+  ]
+}

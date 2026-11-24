@@ -8,13 +8,16 @@
  *  - Corridor-Aware Label Placement & Multi-Label / Node Collision Avoidance
  */
 
-import type {
-  BoundingBox,
-  ConnectionSpec,
-  ResolvedThemeTokens,
-  SceneEdge,
+import {
+  coerceFiniteNumber,
+  VALID_MARKER_TYPES,
+  type BoundingBox,
+  type ConnectionSpec,
+  type ResolvedThemeTokens,
+  type SceneEdge,
 } from "../schema/spec.ts";
 import { TextMeasurer } from "../runtime/text-measurer.ts";
+import { getTonePalette, normalizeTone } from "../runtime/theme-observer.ts";
 
 type PortSide = "top" | "bottom" | "left" | "right" | "center";
 
@@ -1072,9 +1075,499 @@ function polylineHasTrackOrBorderCollision(
   return false;
 }
 
+class StateMinHeap {
+  private states: number[] = [];
+  private keys: number[] = [];
+
+  get size(): number {
+    return this.states.length;
+  }
+
+  push(state: number, key: number): void {
+    let i = this.states.length;
+    this.states.push(state);
+    this.keys.push(key);
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (this.keys[p] <= key) break;
+      this.states[i] = this.states[p];
+      this.keys[i] = this.keys[p];
+      i = p;
+    }
+    this.states[i] = state;
+    this.keys[i] = key;
+  }
+
+  pop(): number {
+    const top = this.states[0];
+    const lastState = this.states.pop()!;
+    const lastKey = this.keys.pop()!;
+    const len = this.states.length;
+    if (len > 0) {
+      let i = 0;
+      while (true) {
+        const l = (i << 1) + 1;
+        if (l >= len) break;
+        let smallest = l;
+        const r = l + 1;
+        if (r < len && this.keys[r] < this.keys[l]) {
+          smallest = r;
+        }
+        if (lastKey <= this.keys[smallest]) break;
+        this.states[i] = this.states[smallest];
+        this.keys[i] = this.keys[smallest];
+        i = smallest;
+      }
+      this.states[i] = lastState;
+      this.keys[i] = lastKey;
+    }
+    return top;
+  }
+}
+
+function lowerBound(arr: number[], target: number): number {
+  let lo = 0;
+  let hi = arr.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (arr[mid] < target) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+function upperBound(arr: number[], target: number): number {
+  let lo = 0;
+  let hi = arr.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (arr[mid] <= target) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+const EDGE_BLOCKED = 1;
+const EDGE_ROUTED_OVERLAP = 2;
+const EDGE_BORDER_COINCIDE = 4;
+
+function runGridAStarOrthogonalPath(
+  p1: [number, number],
+  side1: PortSide,
+  p2: [number, number],
+  side2: PortSide,
+  s1: [number, number],
+  s2: [number, number],
+  n1x: number,
+  n1y: number,
+  n2x: number,
+  n2y: number,
+  rawObstacles: BoundingBox[],
+  paddedObstacles: BoundingBox[],
+  routedSegments: RoutedSegment[],
+  containerBoxes: BoundingBox[],
+  pruneRoi: boolean
+): [number, number][] | null {
+  let activeRawObstacles = rawObstacles;
+  let activePaddedObstacles = paddedObstacles;
+  let activeContainerBoxes = containerBoxes;
+  let activeRoutedSegments = routedSegments;
+  let roiMinX = -Infinity;
+  let roiMaxX = Infinity;
+  let roiMinY = -Infinity;
+  let roiMaxY = Infinity;
+
+  if (pruneRoi) {
+    const basePad = 140;
+    roiMinX = Math.min(p1[0], p2[0], s1[0], s2[0]) - basePad;
+    roiMaxX = Math.max(p1[0], p2[0], s1[0], s2[0]) + basePad;
+    roiMinY = Math.min(p1[1], p2[1], s1[1], s2[1]) - basePad;
+    roiMaxY = Math.max(p1[1], p2[1], s1[1], s2[1]) + basePad;
+
+    // Expand ROI transitively (up to 2 passes) to encompass any obstacle/container intersecting the corridor
+    const expandBoxes = [...rawObstacles, ...containerBoxes];
+    const margin = 56;
+    for (let pass = 0; pass < 2; pass++) {
+      let expanded = false;
+      for (const b of expandBoxes) {
+        if (
+          b.x <= roiMaxX &&
+          b.x + b.width >= roiMinX &&
+          b.y <= roiMaxY &&
+          b.y + b.height >= roiMinY
+        ) {
+          if (b.x - margin < roiMinX) {
+            roiMinX = b.x - margin;
+            expanded = true;
+          }
+          if (b.x + b.width + margin > roiMaxX) {
+            roiMaxX = b.x + b.width + margin;
+            expanded = true;
+          }
+          if (b.y - margin < roiMinY) {
+            roiMinY = b.y - margin;
+            expanded = true;
+          }
+          if (b.y + b.height + margin > roiMaxY) {
+            roiMaxY = b.y + b.height + margin;
+            expanded = true;
+          }
+        }
+      }
+      if (!expanded) break;
+    }
+
+    const boxInRoi = (b: BoundingBox) =>
+      b.x <= roiMaxX &&
+      b.x + b.width >= roiMinX &&
+      b.y <= roiMaxY &&
+      b.y + b.height >= roiMinY;
+
+    activeRawObstacles = rawObstacles.filter(boxInRoi);
+    activePaddedObstacles = paddedObstacles.filter(boxInRoi);
+    activeContainerBoxes = containerBoxes.filter(boxInRoi);
+    activeRoutedSegments = routedSegments.filter((seg) =>
+      seg.axis === "h"
+        ? seg.coord >= roiMinY - 16 &&
+          seg.coord <= roiMaxY + 16 &&
+          seg.max >= roiMinX - 16 &&
+          seg.min <= roiMaxX + 16
+        : seg.coord >= roiMinX - 16 &&
+          seg.coord <= roiMaxX + 16 &&
+          seg.max >= roiMinY - 16 &&
+          seg.min <= roiMaxY + 16
+    );
+  }
+
+  const clearances = [18, 32];
+  const xSet = new Set<number>([
+    Math.round(p1[0]),
+    Math.round(p2[0]),
+    Math.round(p1[0] + n1x * 12),
+    Math.round(p2[0] + n2x * 12),
+    Math.round(s1[0]),
+    Math.round(s2[0]),
+    Math.round((s1[0] + s2[0]) / 2),
+  ]);
+  const ySet = new Set<number>([
+    Math.round(p1[1]),
+    Math.round(p2[1]),
+    Math.round(p1[1] + n1y * 12),
+    Math.round(p2[1] + n2y * 12),
+    Math.round(s1[1]),
+    Math.round(s2[1]),
+    Math.round((s1[1] + s2[1]) / 2),
+  ]);
+
+  const addX = (v: number) => {
+    const r = Math.round(v);
+    if (r >= roiMinX && r <= roiMaxX) xSet.add(r);
+  };
+  const addY = (v: number) => {
+    const r = Math.round(v);
+    if (r >= roiMinY && r <= roiMaxY) ySet.add(r);
+  };
+
+  for (const b of activeRawObstacles) {
+    for (const cl of clearances) {
+      addX(b.x - cl);
+      addX(b.x + b.width + cl);
+      addY(b.y - cl);
+      addY(b.y + b.height + cl);
+    }
+  }
+
+  for (const c of activeContainerBoxes) {
+    for (const cl of clearances) {
+      addX(c.x - cl);
+      addX(c.x + c.width + cl);
+      addY(c.y - cl);
+      addY(c.y + c.height + cl);
+    }
+  }
+
+  // Add shifted alternate parallel tracks around already-routed segments so edges fan into parallel lanes
+  for (const seg of activeRoutedSegments) {
+    if (seg.axis === "v") {
+      addX(seg.coord - 14);
+      addX(seg.coord + 14);
+    } else {
+      addY(seg.coord - 14);
+      addY(seg.coord + 14);
+    }
+  }
+
+  const baseXs = Array.from(xSet).sort((a, b) => a - b);
+  const baseYs = Array.from(ySet).sort((a, b) => a - b);
+  if (baseXs.length <= 64) {
+    for (let i = 0; i < baseXs.length - 1; i++) {
+      if (baseXs[i + 1] - baseXs[i] > 24) {
+        xSet.add(Math.round((baseXs[i] + baseXs[i + 1]) / 2));
+      }
+    }
+  }
+  if (baseYs.length <= 64) {
+    for (let i = 0; i < baseYs.length - 1; i++) {
+      if (baseYs[i + 1] - baseYs[i] > 24) {
+        ySet.add(Math.round((baseYs[i] + baseYs[i + 1]) / 2));
+      }
+    }
+  }
+
+  // Ensure exact s1 and s2 coordinates are in the grid
+  xSet.add(s1[0]);
+  xSet.add(s2[0]);
+  ySet.add(s1[1]);
+  ySet.add(s2[1]);
+
+  const xs = Array.from(xSet).sort((a, b) => a - b);
+  const ys = Array.from(ySet).sort((a, b) => a - b);
+  const nx = xs.length;
+  const ny = ys.length;
+
+  const startXi = lowerBound(xs, s1[0]);
+  const startYi = lowerBound(ys, s1[1]);
+  const endXi = lowerBound(xs, s2[0]);
+  const endYi = lowerBound(ys, s2[1]);
+  if (
+    startXi >= nx ||
+    xs[startXi] !== s1[0] ||
+    startYi >= ny ||
+    ys[startYi] !== s1[1] ||
+    endXi >= nx ||
+    xs[endXi] !== s2[0] ||
+    endYi >= ny ||
+    ys[endYi] !== s2[1]
+  ) {
+    return null;
+  }
+
+  // Precompute obstacle blockage, routed track overlap, and container border flags on grid edges
+  const hStride = Math.max(0, nx - 1);
+  const hEdgeFlags = new Uint8Array(ny * hStride);
+  const vEdgeFlags = new Uint8Array(Math.max(0, ny - 1) * nx);
+
+  for (const obs of activePaddedObstacles) {
+    const bx1 = obs.x;
+    const bx2 = obs.x + obs.width;
+    const by1 = obs.y;
+    const by2 = obs.y + obs.height;
+
+    if (hStride > 0) {
+      const yiStart = upperBound(ys, by1);
+      const yiEnd = lowerBound(ys, by2);
+      const xiStart = Math.max(0, upperBound(xs, bx1) - 1);
+      const xiEnd = Math.min(hStride, lowerBound(xs, bx2));
+      for (let yi = yiStart; yi < yiEnd; yi++) {
+        const rowOff = yi * hStride;
+        for (let xi = xiStart; xi < xiEnd; xi++) {
+          if (xs[xi + 1] > bx1 && xs[xi] < bx2) {
+            hEdgeFlags[rowOff + xi] |= EDGE_BLOCKED;
+          }
+        }
+      }
+    }
+
+    if (ny > 1) {
+      const xiStart = upperBound(xs, bx1);
+      const xiEnd = lowerBound(xs, bx2);
+      const yiStart = Math.max(0, upperBound(ys, by1) - 1);
+      const yiEnd = Math.min(ny - 1, lowerBound(ys, by2));
+      for (let yi = yiStart; yi < yiEnd; yi++) {
+        if (ys[yi + 1] > by1 && ys[yi] < by2) {
+          const rowOff = yi * nx;
+          for (let xi = xiStart; xi < xiEnd; xi++) {
+            vEdgeFlags[rowOff + xi] |= EDGE_BLOCKED;
+          }
+        }
+      }
+    }
+  }
+
+  for (const seg of activeRoutedSegments) {
+    if (seg.axis === "h" && hStride > 0) {
+      const yiStart = upperBound(ys, seg.coord - 10);
+      const yiEnd = lowerBound(ys, seg.coord + 10);
+      const xiStart = Math.max(0, upperBound(xs, seg.min + 2) - 1);
+      const xiEnd = Math.min(hStride, lowerBound(xs, seg.max - 2));
+      for (let yi = yiStart; yi < yiEnd; yi++) {
+        if (Math.abs(ys[yi] - seg.coord) >= 10) continue;
+        const rowOff = yi * hStride;
+        for (let xi = xiStart; xi < xiEnd; xi++) {
+          if (Math.min(xs[xi + 1], seg.max) > Math.max(xs[xi], seg.min) + 2) {
+            hEdgeFlags[rowOff + xi] |= EDGE_ROUTED_OVERLAP;
+          }
+        }
+      }
+    } else if (seg.axis === "v" && ny > 1) {
+      const xiStart = upperBound(xs, seg.coord - 10);
+      const xiEnd = lowerBound(xs, seg.coord + 10);
+      const yiStart = Math.max(0, upperBound(ys, seg.min + 2) - 1);
+      const yiEnd = Math.min(ny - 1, lowerBound(ys, seg.max - 2));
+      for (let yi = yiStart; yi < yiEnd; yi++) {
+        if (Math.min(ys[yi + 1], seg.max) <= Math.max(ys[yi], seg.min) + 2) {
+          continue;
+        }
+        const rowOff = yi * nx;
+        for (let xi = xiStart; xi < xiEnd; xi++) {
+          if (Math.abs(xs[xi] - seg.coord) < 10) {
+            vEdgeFlags[rowOff + xi] |= EDGE_ROUTED_OVERLAP;
+          }
+        }
+      }
+    }
+  }
+
+  for (const c of activeContainerBoxes) {
+    if (hStride > 0) {
+      const xiStart = Math.max(0, upperBound(xs, c.x - 4) - 1);
+      const xiEnd = Math.min(hStride, lowerBound(xs, c.x + c.width + 4));
+      for (const borderY of [c.y, c.y + c.height]) {
+        const yiStart = upperBound(ys, borderY - 10);
+        const yiEnd = lowerBound(ys, borderY + 10);
+        for (let yi = yiStart; yi < yiEnd; yi++) {
+          if (Math.abs(ys[yi] - borderY) >= 10) continue;
+          const rowOff = yi * hStride;
+          for (let xi = xiStart; xi < xiEnd; xi++) {
+            if (xs[xi + 1] > c.x - 4 && xs[xi] < c.x + c.width + 4) {
+              hEdgeFlags[rowOff + xi] |= EDGE_BORDER_COINCIDE;
+            }
+          }
+        }
+      }
+    }
+
+    if (ny > 1) {
+      const yiStart = Math.max(0, upperBound(ys, c.y - 4) - 1);
+      const yiEnd = Math.min(ny - 1, lowerBound(ys, c.y + c.height + 4));
+      for (const borderX of [c.x, c.x + c.width]) {
+        const xiStart = upperBound(xs, borderX - 10);
+        const xiEnd = lowerBound(xs, borderX + 10);
+        for (let yi = yiStart; yi < yiEnd; yi++) {
+          if (ys[yi + 1] <= c.y - 4 || ys[yi] >= c.y + c.height + 4) continue;
+          const rowOff = yi * nx;
+          for (let xi = xiStart; xi < xiEnd; xi++) {
+            if (Math.abs(xs[xi] - borderX) < 10) {
+              vEdgeFlags[rowOff + xi] |= EDGE_BORDER_COINCIDE;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Directions: 0 = horiz, 1 = vert
+  const initDir = side1 === "left" || side1 === "right" ? 0 : 1;
+  const targetDir = side2 === "left" || side2 === "right" ? 0 : 1;
+  const stateCount = nx * ny * 2;
+  const dist = new Float64Array(stateCount).fill(Infinity);
+  const parent = new Int32Array(stateCount).fill(-1);
+  const visited = new Uint8Array(stateCount);
+
+  const encode = (xi: number, yi: number, dir: number) =>
+    (yi * nx + xi) * 2 + dir;
+
+  const endX = xs[endXi];
+  const endY = ys[endYi];
+  const startState = encode(startXi, startYi, initDir);
+  dist[startState] = 0;
+
+  const heap = new StateMinHeap();
+  heap.push(
+    startState,
+    Math.abs(xs[startXi] - endX) + Math.abs(ys[startYi] - endY)
+  );
+
+  const bendPenalty = 85;
+  const dxs = [1, -1, 0, 0];
+  const dys = [0, 0, 1, -1];
+  const dirs = [0, 0, 1, 1];
+
+  while (heap.size > 0) {
+    const u = heap.pop();
+    if (visited[u]) continue;
+    visited[u] = 1;
+    const bestD = dist[u];
+
+    const uDir = u & 1;
+    const cell = u >> 1;
+    const uXi = cell % nx;
+    const uYi = (cell / nx) | 0;
+
+    if (uXi === endXi && uYi === endYi) {
+      break;
+    }
+
+    const ux = xs[uXi];
+    const uy = ys[uYi];
+
+    for (let d = 0; d < 4; d++) {
+      const vXi = uXi + dxs[d];
+      const vYi = uYi + dys[d];
+      if (vXi < 0 || vXi >= nx || vYi < 0 || vYi >= ny) continue;
+
+      const vDir = dirs[d];
+      const flags =
+        vDir === 0
+          ? hEdgeFlags[uYi * hStride + (uXi < vXi ? uXi : vXi)]
+          : vEdgeFlags[(uYi < vYi ? uYi : vYi) * nx + uXi];
+
+      if ((flags & EDGE_BLOCKED) !== 0) {
+        continue;
+      }
+
+      const vx = xs[vXi];
+      const vy = ys[vYi];
+      const segLen = vDir === 0 ? Math.abs(vx - ux) : Math.abs(vy - uy);
+
+      let extraCost = uDir !== vDir ? bendPenalty : 0;
+      if (vXi === endXi && vYi === endYi && vDir !== targetDir) {
+        extraCost += bendPenalty;
+      }
+
+      // Penalize overlapping previously routed edge segments (track reservation)
+      if ((flags & EDGE_ROUTED_OVERLAP) !== 0) {
+        extraCost += 480 + segLen * 3;
+      }
+
+      // Penalize riding directly on top of a Group/Window container border
+      if ((flags & EDGE_BORDER_COINCIDE) !== 0) {
+        extraCost += 650 + segLen * 4;
+      }
+
+      const vState = encode(vXi, vYi, vDir);
+      const nextDist = bestD + segLen + extraCost;
+      if (nextDist < dist[vState]) {
+        dist[vState] = nextDist;
+        parent[vState] = u;
+        const h = Math.abs(vx - endX) + Math.abs(vy - endY);
+        heap.push(vState, nextDist + h);
+      }
+    }
+  }
+
+  const endState0 = encode(endXi, endYi, 0);
+  const endState1 = encode(endXi, endYi, 1);
+  let curr = dist[endState0] <= dist[endState1] ? endState0 : endState1;
+  if (dist[curr] === Infinity) return null;
+
+  const gridPts: [number, number][] = [];
+  while (curr !== -1) {
+    const cell = curr >> 1;
+    const xi = cell % nx;
+    const yi = (cell / nx) | 0;
+    gridPts.push([xs[xi], ys[yi]]);
+    curr = parent[curr];
+  }
+  gridPts.reverse();
+
+  return simplifyPolyline([p1, ...gridPts, p2]);
+}
+
 /**
  * Finds a minimum-bend, shortest-path orthogonal route from p1 to p2 on a Hanan visibility grid
  * avoiding all intermediate and endpoint obstacle bounding boxes, container borders, and previously routed tracks.
+ * Uses binary-heap A* search over ROI-pruned precomputed edge tables (O(E log V)).
  */
 function findObstacleFreeOrthogonalPath(
   p1: [number, number],
@@ -1129,7 +1622,7 @@ function findObstacleFreeOrthogonalPath(
         : p;
     } else if (routedSegments.length > 0) {
       // If the default 20px stub lands directly on top of a previously routed perpendicular track,
-      // step back to a 10px stub so Dijkstra can branch onto a clean parallel lane right away.
+      // step back to a 10px stub so search can branch onto a clean parallel lane right away.
       const perpAxis: "h" | "v" = side === "top" || side === "bottom" ? "h" : "v";
       const sCoord = perpAxis === "h" ? s[1] : s[0];
       const sPerp = perpAxis === "h" ? s[0] : s[1];
@@ -1153,200 +1646,42 @@ function findObstacleFreeOrthogonalPath(
   const s1 = computeCleanStub(p1, side1, n1x, n1y);
   const s2 = computeCleanStub(p2, side2, n2x, n2y);
 
-  const clearances = [18, 32];
-  const xSet = new Set<number>([
-    Math.round(p1[0]),
-    Math.round(p2[0]),
-    Math.round(p1[0] + n1x * 12),
-    Math.round(p2[0] + n2x * 12),
-    Math.round(s1[0]),
-    Math.round(s2[0]),
-    Math.round((s1[0] + s2[0]) / 2),
-  ]);
-  const ySet = new Set<number>([
-    Math.round(p1[1]),
-    Math.round(p2[1]),
-    Math.round(p1[1] + n1y * 12),
-    Math.round(p2[1] + n2y * 12),
-    Math.round(s1[1]),
-    Math.round(s2[1]),
-    Math.round((s1[1] + s2[1]) / 2),
-  ]);
+  const pruned = runGridAStarOrthogonalPath(
+    p1,
+    side1,
+    p2,
+    side2,
+    s1,
+    s2,
+    n1x,
+    n1y,
+    n2x,
+    n2y,
+    rawObstacles,
+    paddedObstacles,
+    routedSegments,
+    containerBoxes,
+    true
+  );
+  if (pruned) return pruned;
 
-  for (const b of rawObstacles) {
-    for (const cl of clearances) {
-      xSet.add(Math.round(b.x - cl));
-      xSet.add(Math.round(b.x + b.width + cl));
-      ySet.add(Math.round(b.y - cl));
-      ySet.add(Math.round(b.y + b.height + cl));
-    }
-  }
-
-  for (const c of containerBoxes) {
-    for (const cl of clearances) {
-      xSet.add(Math.round(c.x - cl));
-      xSet.add(Math.round(c.x + c.width + cl));
-      ySet.add(Math.round(c.y - cl));
-      ySet.add(Math.round(c.y + c.height + cl));
-    }
-  }
-
-  // Add shifted alternate parallel tracks around already-routed segments so edges fan into parallel lanes
-  for (const seg of routedSegments) {
-    if (seg.axis === "v") {
-      xSet.add(Math.round(seg.coord - 14));
-      xSet.add(Math.round(seg.coord + 14));
-    } else {
-      ySet.add(Math.round(seg.coord - 14));
-      ySet.add(Math.round(seg.coord + 14));
-    }
-  }
-
-  const baseXs = Array.from(xSet).sort((a, b) => a - b);
-  const baseYs = Array.from(ySet).sort((a, b) => a - b);
-  for (let i = 0; i < baseXs.length - 1; i++) {
-    if (baseXs[i + 1] - baseXs[i] > 24) {
-      xSet.add(Math.round((baseXs[i] + baseXs[i + 1]) / 2));
-    }
-  }
-  for (let i = 0; i < baseYs.length - 1; i++) {
-    if (baseYs[i + 1] - baseYs[i] > 24) {
-      ySet.add(Math.round((baseYs[i] + baseYs[i + 1]) / 2));
-    }
-  }
-
-  // Ensure exact s1 and s2 coordinates are in the grid
-  xSet.add(s1[0]);
-  xSet.add(s2[0]);
-  ySet.add(s1[1]);
-  ySet.add(s2[1]);
-
-  const xs = Array.from(xSet).sort((a, b) => a - b);
-  const ys = Array.from(ySet).sort((a, b) => a - b);
-  const nx = xs.length;
-  const ny = ys.length;
-
-  const startXi = xs.indexOf(s1[0]);
-  const startYi = ys.indexOf(s1[1]);
-  const endXi = xs.indexOf(s2[0]);
-  const endYi = ys.indexOf(s2[1]);
-  if (startXi < 0 || startYi < 0 || endXi < 0 || endYi < 0) return null;
-
-  // Directions: 0 = horiz, 1 = vert
-  const initDir = side1 === "left" || side1 === "right" ? 0 : 1;
-  const targetDir = side2 === "left" || side2 === "right" ? 0 : 1;
-  const stateCount = nx * ny * 2;
-  const dist = new Float64Array(stateCount).fill(Infinity);
-  const parent = new Int32Array(stateCount).fill(-1);
-  const visited = new Uint8Array(stateCount);
-
-  const encode = (xi: number, yi: number, dir: number) =>
-    (yi * nx + xi) * 2 + dir;
-
-  const startState = encode(startXi, startYi, initDir);
-  dist[startState] = 0;
-
-  const bendPenalty = 85;
-  const dxs = [1, -1, 0, 0];
-  const dys = [0, 0, 1, -1];
-  const dirs = [0, 0, 1, 1];
-
-  for (let step = 0; step < stateCount; step++) {
-    let u = -1;
-    let bestD = Infinity;
-    for (let s = 0; s < stateCount; s++) {
-      if (!visited[s] && dist[s] < bestD) {
-        bestD = dist[s];
-        u = s;
-      }
-    }
-    if (u === -1 || bestD === Infinity) break;
-    visited[u] = 1;
-
-    const uDir = u & 1;
-    const cell = u >> 1;
-    const uXi = cell % nx;
-    const uYi = (cell / nx) | 0;
-
-    if (uXi === endXi && uYi === endYi) {
-      break;
-    }
-
-    const ux = xs[uXi];
-    const uy = ys[uYi];
-
-    for (let d = 0; d < 4; d++) {
-      const vXi = uXi + dxs[d];
-      const vYi = uYi + dys[d];
-      if (vXi < 0 || vXi >= nx || vYi < 0 || vYi >= ny) continue;
-
-      const vDir = dirs[d];
-      const vx = xs[vXi];
-      const vy = ys[vYi];
-
-      if (polylineHitsObstacles([[ux, uy], [vx, vy]], paddedObstacles)) {
-        continue;
-      }
-
-      const segLen = Math.abs(vx - ux) + Math.abs(vy - uy);
-      let extraCost = uDir !== vDir ? bendPenalty : 0;
-      if (vXi === endXi && vYi === endYi && vDir !== targetDir) {
-        extraCost += bendPenalty;
-      }
-
-      // Penalize overlapping previously routed edge segments (track reservation)
-      const axis: "h" | "v" = vDir === 0 ? "h" : "v";
-      const coord = vDir === 0 ? uy : ux;
-      const segMin = vDir === 0 ? Math.min(ux, vx) : Math.min(uy, vy);
-      const segMax = vDir === 0 ? Math.max(ux, vx) : Math.max(uy, vy);
-      if (
-        routedSegments.length > 0 &&
-        segmentOverlapsRouted(axis, coord, segMin, segMax, routedSegments, 10)
-      ) {
-        extraCost += 480 + segLen * 3;
-      }
-
-      // Penalize riding directly on top of a Group/Window container border
-      if (
-        containerBoxes.length > 0 &&
-        segmentCoincidesWithContainerBorder(
-          axis,
-          coord,
-          segMin,
-          segMax,
-          containerBoxes,
-          10
-        )
-      ) {
-        extraCost += 650 + segLen * 4;
-      }
-
-      const vState = encode(vXi, vYi, vDir);
-      const nextDist = bestD + segLen + extraCost;
-      if (nextDist < dist[vState]) {
-        dist[vState] = nextDist;
-        parent[vState] = u;
-      }
-    }
-  }
-
-  const endState0 = encode(endXi, endYi, 0);
-  const endState1 = encode(endXi, endYi, 1);
-  let curr =
-    dist[endState0] <= dist[endState1] ? endState0 : endState1;
-  if (dist[curr] === Infinity) return null;
-
-  const gridPts: [number, number][] = [];
-  while (curr !== -1) {
-    const cell = curr >> 1;
-    const xi = cell % nx;
-    const yi = (cell / nx) | 0;
-    gridPts.push([xs[xi], ys[yi]]);
-    curr = parent[curr];
-  }
-  gridPts.reverse();
-
-  return simplifyPolyline([p1, ...gridPts, p2]);
+  return runGridAStarOrthogonalPath(
+    p1,
+    side1,
+    p2,
+    side2,
+    s1,
+    s2,
+    n1x,
+    n1y,
+    n2x,
+    n2y,
+    rawObstacles,
+    paddedObstacles,
+    routedSegments,
+    containerBoxes,
+    false
+  );
 }
 
 // ============================================================================
@@ -1664,6 +1999,9 @@ export function routeConnections(
       return preferred;
     };
 
+    // Intentional reflow behavior: in compact vertical mode, desktop horizontal ports (@right/@left)
+    // would force awkward wrap-arounds after nodes are stacked vertically, so ports are automatically
+    // re-selected to match the reflowed vertical geometry.
     let fromSide = compact
       ? pickUnblockedSide(
           autoSides.fromSide,
@@ -2154,10 +2492,16 @@ export function routeConnections(
     }
 
     const routing = conn.routing || "orthogonal";
-    const cornerRadius = conn.cornerRadius ?? 8;
-    const stub = conn.stub ?? 20;
-    const startMarker = conn.startMarker || "none";
-    const endMarker = conn.endMarker || "arrow";
+    const cornerRadius = Math.max(0, coerceFiniteNumber(conn.cornerRadius) ?? 8);
+    const stub = Math.max(0, coerceFiniteNumber(conn.stub) ?? 20);
+    const startMarker =
+      conn.startMarker && VALID_MARKER_TYPES.has(conn.startMarker)
+        ? conn.startMarker
+        : "none";
+    const endMarker =
+      conn.endMarker && VALID_MARKER_TYPES.has(conn.endMarker)
+        ? conn.endMarker
+        : "arrow";
     const hasStartArrow = startMarker === "arrow";
     const hasEndArrow = endMarker === "arrow";
     // Unified arrow pullback standard: 7.0px marker tip extension (9.5 - 2.5) + 0.7px target border half-stroke (1.5px / 2)
@@ -2243,7 +2587,8 @@ export function routeConnections(
             ? dy
             : Math.hypot(dx, dy);
         const controlLen =
-          conn.curveOffset ?? Math.max(28, Math.min(120, primarySpan * 0.45));
+          coerceFiniteNumber(conn.curveOffset) ??
+          Math.max(28, Math.min(120, primarySpan * 0.45));
         const c1: [number, number] = [
           p1[0] + n1x * controlLen,
           p1[1] + n1y * controlLen,
@@ -2305,11 +2650,11 @@ export function routeConnections(
       pathD = buildRoundedPolylinePath(pullbackPolyline(points), cornerRadius);
     }
 
-    const tone = conn.tone || "neutral";
+    const tone = normalizeTone(conn.tone, "neutral");
     const stroke =
       tone === "neutral"
         ? theme.colors.textMuted
-        : theme.colors.tones[tone].main;
+        : getTonePalette(theme, tone).main;
 
     const strokeWidth =
       conn.strokeWidth === "thin"
@@ -2713,8 +3058,8 @@ export function routeConnections(
       stroke,
       strokeWidth,
       strokeDasharray,
-      startMarker: conn.startMarker || "none",
-      endMarker: conn.endMarker || "arrow",
+      startMarker,
+      endMarker,
       animation: {
         type: animType,
         durationSec,

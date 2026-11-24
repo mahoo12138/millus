@@ -1,0 +1,149 @@
+{
+  "title": "Raft WAL 帧位图、消息队列与复制时序",
+  "canvas": {
+    "background": "grid",
+    "padding": 32
+  },
+  "elements": [
+    {
+      "id": "wal_header",
+      "type": "bitfield",
+      "title": "Raft Log Entry Frame",
+      "totalBits": 64,
+      "fields": [
+        {
+          "name": "CRC32",
+          "bits": 32,
+          "value": "0x8F2A",
+          "tone": "warning"
+        },
+        {
+          "name": "Term",
+          "bits": 16,
+          "value": "epoch=14",
+          "tone": "primary"
+        },
+        {
+          "name": "Type",
+          "bits": 8,
+          "value": "DATA",
+          "tone": "accent"
+        },
+        {
+          "name": "Flags",
+          "bits": 8,
+          "value": "SYNC",
+          "tone": "success"
+        }
+      ]
+    },
+    {
+      "id": "raft_queue",
+      "type": "queue",
+      "label": "AppendEntries Pipeline",
+      "sublabel": "Zero-Allocation Ring",
+      "place": {
+        "below": "wal_header",
+        "gap": 44,
+        "align": "start"
+      },
+      "style": {
+        "tone": "accent",
+        "variant": "soft"
+      }
+    },
+    {
+      "id": "wal_disk",
+      "type": "cylinder",
+      "label": "NVMe WAL Store",
+      "sublabel": "io_uring fsync",
+      "place": {
+        "rightOf": "raft_queue",
+        "gap": 64,
+        "align": "center"
+      },
+      "style": {
+        "tone": "success",
+        "variant": "soft",
+        "elevation": "sm"
+      }
+    },
+    {
+      "id": "raft_seq",
+      "type": "sequence",
+      "title": "Quorum 多数派复制时序",
+      "place": {
+        "rightOf": "wal_header",
+        "gap": 64,
+        "align": "start"
+      },
+      "actors": [
+        {
+          "id": "leader",
+          "label": "Leader",
+          "sublabel": "node-1",
+          "tone": "primary"
+        },
+        {
+          "id": "follower",
+          "label": "Follower",
+          "sublabel": "node-2",
+          "tone": "accent"
+        }
+      ],
+      "messages": [
+        {
+          "from": "leader",
+          "to": "follower",
+          "label": "AppendEntries(term=14)",
+          "type": "sync",
+          "tone": "primary"
+        },
+        {
+          "from": "follower",
+          "to": "follower",
+          "label": "落盘 CRC32 校验",
+          "tone": "warning"
+        },
+        {
+          "from": "follower",
+          "to": "leader",
+          "label": "AppendOK(matchIdx=902)",
+          "type": "reply",
+          "tone": "success"
+        }
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "from": "wal_header.field_0@bottom",
+      "to": "raft_queue@top",
+      "label": "封装帧批次",
+      "tone": "primary",
+      "animation": {
+        "type": "pulse"
+      }
+    },
+    {
+      "from": "raft_queue@right",
+      "to": "wal_disk@left",
+      "label": "Direct I/O",
+      "tone": "success",
+      "animation": {
+        "type": "flow"
+      }
+    },
+    {
+      "from": "wal_header@right",
+      "to": "raft_seq.leader@left",
+      "label": "广播日志",
+      "routing": "curved",
+      "tone": "primary",
+      "animation": {
+        "type": "pulse",
+        "speed": "fast"
+      }
+    }
+  ]
+}

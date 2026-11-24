@@ -1,20 +1,23 @@
 /**
  * <ai-illustration> Standard Web Component Runtime
- * Framework-agnostic CustomElement with ThemeObserver, ResizeObserver,
- * Sub-Anchor Hover Focus Highlighting, and Floating Toolbar (Clean/Sketch, Pan/Zoom, HiDPI PNG Export).
+ * Framework-agnostic CustomElement with ThemeObserver, ResizeObserver, Child MutationObserver,
+ * Sub-Anchor Hover Focus Highlighting, and Floating Toolbar (Clean/Sketch/Blueprint, Pan/Zoom, HiDPI PNG Export).
  */
 
-import type {
-  IllustrationSpec,
-  PresetStyle,
-  SceneGraph,
-} from "../schema/spec.ts";
 import {
   parseIllustrationSpecText,
   validateIllustrationSpec,
+  VALID_PRESET_STYLES,
+  type IllustrationSpec,
+  type PresetStyle,
+  type SceneGraph,
 } from "../schema/spec.ts";
 import { compileIllustration } from "../compiler/index.ts";
-import { resolveThemeTokens, ThemeObserver } from "./theme-observer.ts";
+import {
+  computeThemeFingerprint,
+  resolveThemeTokens,
+  ThemeObserver,
+} from "./theme-observer.ts";
 import { TextMeasurer } from "./text-measurer.ts";
 import { renderSceneGraphToSvgString } from "./svg-dom-renderer.ts";
 
@@ -127,6 +130,30 @@ const COMPONENT_STYLES = `
 }
 `;
 
+const COMPACT_BREAKPOINT_PX = 620;
+const MAX_PNG_CANVAS_DIM = 8192;
+const MAX_PNG_CANVAS_AREA = 16_777_216; // 4096 x 4096
+
+let wcInstanceCounter = 0;
+
+/**
+ * Computes safe PNG export scale factor capped by browser canvas dimension & pixel-area limits.
+ */
+export function computeSafePngExportScale(
+  width: number,
+  height: number,
+  preferredScale = 2
+): number {
+  const safeW = Math.max(1, width);
+  const safeH = Math.max(1, height);
+  const maxDimScale = Math.min(
+    MAX_PNG_CANVAS_DIM / safeW,
+    MAX_PNG_CANVAS_DIM / safeH
+  );
+  const maxAreaScale = Math.sqrt(MAX_PNG_CANVAS_AREA / (safeW * safeH));
+  return Math.max(0.5, Math.min(preferredScale, maxDimScale, maxAreaScale));
+}
+
 const BaseHTMLElement: typeof HTMLElement =
   typeof HTMLElement !== "undefined"
     ? HTMLElement
@@ -138,19 +165,43 @@ export class AiIllustrationElement extends BaseHTMLElement {
   }
 
   private shadow: ShadowRoot;
+  private rootEl: HTMLDivElement | null = null;
+  private modalHostEl: HTMLDivElement | null = null;
   private parsedSpec: IllustrationSpec | null = null;
   private parseError: string | null = null;
+  private specFromProperty = false;
+  private lastDomSpecText: string | null = null;
   private currentScene: SceneGraph | null = null;
   private themeObserver?: ThemeObserver;
   private resizeObserver?: ResizeObserver;
+  private childObserver?: MutationObserver;
+  private lightboxAbort?: AbortController;
   private measurer = new TextMeasurer();
+  private headlessMeasurer = new TextMeasurer({ forceHeadless: true });
   private overridePreset?: PresetStyle;
   private forceCompact?: boolean;
   private containerWidth = 900;
+  private lastRenderKey = "";
+  private readonly instancePrefix: string;
 
   constructor() {
     super();
+    this.instancePrefix = `ill-wc-${++wcInstanceCounter}`;
     this.shadow = this.attachShadow({ mode: "open" });
+    this.ensureShadowStructure();
+  }
+
+  private ensureShadowStructure(): void {
+    if (this.rootEl && this.modalHostEl) return;
+    if (typeof document === "undefined") return;
+    this.shadow.innerHTML = "";
+    const styleEl = document.createElement("style");
+    styleEl.textContent = COMPONENT_STYLES;
+    this.rootEl = document.createElement("div");
+    this.rootEl.className = "ai-ill-root";
+    this.modalHostEl = document.createElement("div");
+    this.modalHostEl.className = "ai-ill-modal-host";
+    this.shadow.append(styleEl, this.rootEl, this.modalHostEl);
   }
 
   get spec(): IllustrationSpec | null {
@@ -158,17 +209,39 @@ export class AiIllustrationElement extends BaseHTMLElement {
   }
 
   set spec(val: IllustrationSpec | string | null) {
-    if (typeof val === "string") {
+    if (val === null) {
+      this.specFromProperty = false;
+      this.parsedSpec = null;
+      this.parseError = null;
+      this.lastDomSpecText = null;
+    } else if (typeof val === "string") {
+      this.specFromProperty = true;
       this.parseSpecString(val);
     } else {
+      this.specFromProperty = true;
       this.parsedSpec = val;
       this.parseError = null;
     }
+    this.lastRenderKey = "";
     this.render();
   }
 
+  public computeIsCompact(width = this.containerWidth): boolean {
+    if (this.forceCompact !== undefined) {
+      return this.forceCompact;
+    }
+    const responsiveAttr = this.getAttribute("responsive") || "reflow";
+    return responsiveAttr === "reflow" && width < COMPACT_BREAKPOINT_PX;
+  }
+
   connectedCallback(): void {
-    this.loadInitialSpecFromDom();
+    this.ensureShadowStructure();
+    if (typeof this.getBoundingClientRect === "function") {
+      const rectW = this.getBoundingClientRect().width;
+      if (rectW > 0) this.containerWidth = rectW;
+    }
+
+    this.loadSpecFromDom(false);
 
     this.themeObserver = new ThemeObserver(this, () => {
       this.render();
@@ -179,8 +252,13 @@ export class AiIllustrationElement extends BaseHTMLElement {
       this.resizeObserver = new ResizeObserver((entries) => {
         for (const entry of entries) {
           const w = entry.contentRect.width;
-          if (w > 0 && Math.abs(w - this.containerWidth) > 12) {
-            this.containerWidth = w;
+          if (w <= 0) continue;
+          const prevCompact = this.computeIsCompact(this.containerWidth);
+          this.containerWidth = w;
+          const responsiveAttr = this.getAttribute("responsive") || "reflow";
+          if (responsiveAttr === "scale") continue;
+          const nextCompact = this.computeIsCompact(w);
+          if (nextCompact !== prevCompact) {
             this.render();
           }
         }
@@ -188,12 +266,33 @@ export class AiIllustrationElement extends BaseHTMLElement {
       this.resizeObserver.observe(this);
     }
 
+    if (typeof MutationObserver !== "undefined") {
+      this.childObserver = new MutationObserver(() => {
+        if (this.specFromProperty || this.getAttribute("spec")) return;
+        const changed = this.loadSpecFromDom(true);
+        if (changed) {
+          this.lastRenderKey = "";
+          this.render();
+        }
+      });
+      this.childObserver.observe(this, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+      });
+    }
+
     this.render();
   }
 
   disconnectedCallback(): void {
     this.themeObserver?.disconnect();
+    this.themeObserver = undefined;
     this.resizeObserver?.disconnect();
+    this.resizeObserver = undefined;
+    this.childObserver?.disconnect();
+    this.childObserver = undefined;
+    this.closeFullscreenLightbox();
   }
 
   attributeChangedCallback(
@@ -202,37 +301,69 @@ export class AiIllustrationElement extends BaseHTMLElement {
     newVal: string | null
   ): void {
     if (oldVal === newVal) return;
-    if (name === "spec" && newVal) {
-      this.parseSpecString(newVal);
+    if (name === "spec") {
+      if (newVal) {
+        this.parseSpecString(newVal);
+      } else if (!this.specFromProperty) {
+        this.parsedSpec = null;
+        this.parseError = null;
+        this.lastDomSpecText = null;
+        this.loadSpecFromDom(true);
+      }
     } else if (name === "preset") {
-      this.overridePreset = (newVal as PresetStyle) || undefined;
+      this.overridePreset =
+        newVal && VALID_PRESET_STYLES.has(newVal)
+          ? (newVal as PresetStyle)
+          : undefined;
     }
+    this.lastRenderKey = "";
     if (this.isConnected) {
       this.render();
     }
   }
 
-  private loadInitialSpecFromDom(): void {
-    if (this.parsedSpec) return;
-
-    const attrSpec = this.getAttribute("spec");
-    if (attrSpec) {
-      this.parseSpecString(attrSpec);
-      return;
-    }
-
+  private extractRawSpecTextFromChildren(): string | null {
     const scriptEl = this.querySelector(
       'script[type="application/json"], script[type="application/yaml"]'
     );
-    if (scriptEl && scriptEl.textContent) {
-      this.parseSpecString(scriptEl.textContent);
-      return;
+    if (scriptEl && scriptEl.textContent?.trim()) {
+      return scriptEl.textContent.trim();
     }
 
-    const rawText = this.textContent?.trim();
-    if (rawText) {
-      this.parseSpecString(rawText);
+    // Collect plain light-DOM text while ignoring pre-rendered SSR fallback containers
+    const textParts: string[] = [];
+    for (const node of Array.from(this.childNodes)) {
+      if (
+        node.nodeType === 1 &&
+        (node as Element).classList?.contains("ai-ill-ssr-fallback")
+      ) {
+        continue;
+      }
+      const txt = node.textContent?.trim();
+      if (txt) textParts.push(txt);
     }
+    const joined = textParts.join("\n").trim();
+    return joined || null;
+  }
+
+  private loadSpecFromDom(allowReload: boolean): boolean {
+    if (!allowReload && (this.parsedSpec || this.parseError)) return false;
+
+    const attrSpec = this.getAttribute("spec");
+    if (attrSpec) {
+      if (attrSpec === this.lastDomSpecText && !allowReload) return false;
+      this.lastDomSpecText = attrSpec;
+      this.parseSpecString(attrSpec);
+      return true;
+    }
+
+    const rawText = this.extractRawSpecTextFromChildren();
+    if (!rawText) return false;
+    if (rawText === this.lastDomSpecText) return false;
+
+    this.lastDomSpecText = rawText;
+    this.parseSpecString(rawText);
+    return true;
   }
 
   private parseSpecString(raw: string): void {
@@ -246,29 +377,74 @@ export class AiIllustrationElement extends BaseHTMLElement {
     }
   }
 
+  private renderError(heading: string, detail: string): void {
+    this.ensureShadowStructure();
+    if (!this.rootEl) return;
+    this.rootEl.textContent = "";
+    const errDiv = document.createElement("div");
+    errDiv.className = "ai-ill-error";
+    errDiv.textContent = `${heading}\n${detail}`;
+    this.rootEl.appendChild(errDiv);
+  }
+
   public render(): void {
+    this.ensureShadowStructure();
     if (!this.parsedSpec && !this.parseError) {
-      this.loadInitialSpecFromDom();
+      this.loadSpecFromDom(false);
     }
     if (this.parseError) {
-      this.shadow.innerHTML = `<style>${COMPONENT_STYLES}</style>
-        <div class="ai-ill-error">Spec Parse Error:\n${this.parseError}</div>`;
+      this.lastRenderKey = "";
+      this.renderError("Spec Parse Error:", this.parseError);
       return;
     }
-    if (!this.parsedSpec) return;
+    if (!this.parsedSpec || !this.rootEl) return;
 
     const validation = validateIllustrationSpec(this.parsedSpec);
     if (!validation.valid || !validation.spec) {
-      this.shadow.innerHTML = `<style>${COMPONENT_STYLES}</style>
-        <div class="ai-ill-error">Invalid IllustrationSpec:\n${validation.errors.join("\n")}</div>`;
+      this.lastRenderKey = "";
+      this.renderError(
+        "Invalid IllustrationSpec:",
+        validation.errors.join("\n")
+      );
       return;
     }
 
+    const presetAttr = this.getAttribute("preset");
+    const validPresetAttr =
+      presetAttr && VALID_PRESET_STYLES.has(presetAttr)
+        ? (presetAttr as PresetStyle)
+        : undefined;
     const activePreset =
       this.overridePreset ||
-      (this.getAttribute("preset") as PresetStyle) ||
+      validPresetAttr ||
       validation.spec.style?.preset ||
       undefined;
+
+    const isCompact = this.computeIsCompact();
+    const showToolbar = this.getAttribute("toolbar") !== "false";
+    const themeFp = computeThemeFingerprint(this);
+
+    // Preserve SSR pixel dimensions on initial non-compact hydration for Zero-CLS parity
+    const hasSsrDimensions =
+      this.hasAttribute("data-ssr-width") &&
+      this.hasAttribute("data-ssr-height");
+    const useSsrMeasurer =
+      hasSsrDimensions &&
+      !isCompact &&
+      this.forceCompact === undefined &&
+      this.overridePreset === undefined;
+
+    const renderKey = [
+      activePreset || "",
+      isCompact ? "1" : "0",
+      showToolbar ? "1" : "0",
+      useSsrMeasurer ? "1" : "0",
+      themeFp,
+    ].join("::");
+
+    if (renderKey === this.lastRenderKey && this.currentScene) {
+      return;
+    }
 
     const theme = resolveThemeTokens(
       this,
@@ -276,22 +452,22 @@ export class AiIllustrationElement extends BaseHTMLElement {
       validation.spec.style?.roughness
     );
 
-    const responsiveAttr = this.getAttribute("responsive") || "reflow";
-    const isCompact =
-      this.forceCompact !== undefined
-        ? this.forceCompact
-        : responsiveAttr === "reflow" && this.containerWidth < 620;
+    const activeMeasurer = useSsrMeasurer
+      ? this.headlessMeasurer
+      : this.measurer;
 
     const scene = compileIllustration(
       validation.spec,
       theme,
       { compactViewport: isCompact },
-      this.measurer
+      activeMeasurer
     );
     this.currentScene = scene;
+    this.lastRenderKey = renderKey;
 
-    const svgHtml = renderSceneGraphToSvgString(scene);
-    const showToolbar = this.getAttribute("toolbar") !== "false";
+    const svgHtml = renderSceneGraphToSvgString(scene, {
+      idPrefix: this.instancePrefix,
+    });
     const isAltPreset = scene.preset !== "clean";
     const presetLabel =
       scene.preset === "sketch"
@@ -300,8 +476,7 @@ export class AiIllustrationElement extends BaseHTMLElement {
         ? "⊞ Blueprint"
         : "◇ Clean";
 
-    this.shadow.innerHTML = `
-      <style>${COMPONENT_STYLES}</style>
+    this.rootEl.innerHTML = `
       <div class="ai-ill-wrapper" data-mode="${theme.mode}" data-preset="${scene.preset}">
         ${
           showToolbar
@@ -328,11 +503,24 @@ export class AiIllustrationElement extends BaseHTMLElement {
       </div>
     `;
 
+    // If fullscreen lightbox is open during a theme/preset update, refresh its SVG in place
+    if (this.modalHostEl) {
+      const openModalCanvas = this.modalHostEl.querySelector(
+        ".ai-ill-modal-canvas"
+      ) as HTMLElement | null;
+      if (openModalCanvas) {
+        openModalCanvas.innerHTML = renderSceneGraphToSvgString(scene, {
+          idPrefix: `${this.instancePrefix}-modal`,
+        });
+      }
+    }
+
     this.bindInteractiveEvents();
   }
 
   private bindInteractiveEvents(): void {
-    const svgEl = this.shadow.querySelector(".ai-ill-svg") as SVGSVGElement | null;
+    if (!this.rootEl) return;
+    const svgEl = this.rootEl.querySelector(".ai-ill-svg") as SVGSVGElement | null;
     if (!svgEl || !this.currentScene) return;
 
     const adjacency = this.currentScene.adjacency;
@@ -447,7 +635,11 @@ export class AiIllustrationElement extends BaseHTMLElement {
       const nodeEl = target.closest("[data-node-id]");
       if (nodeEl) {
         const nid = nodeEl.getAttribute("data-node-id");
-        if (nid && adjacency[nid] && (adjacency[nid].edgeIds.size > 0 || adjacency[nid].nodeIds.size > 1)) {
+        if (
+          nid &&
+          adjacency[nid] &&
+          (adjacency[nid].edgeIds.size > 0 || adjacency[nid].nodeIds.size > 1)
+        ) {
           applyFocus(nid);
           return;
         }
@@ -461,9 +653,11 @@ export class AiIllustrationElement extends BaseHTMLElement {
     });
 
     // Toolbar actions
-    const toolbar = this.shadow.querySelector(".ai-ill-toolbar");
+    const toolbar = this.rootEl.querySelector(".ai-ill-toolbar");
     toolbar?.addEventListener("click", (e) => {
-      const btn = (e.target as Element).closest("[data-action]") as HTMLElement | null;
+      const btn = (e.target as Element).closest(
+        "[data-action]"
+      ) as HTMLElement | null;
       if (!btn) return;
       const action = btn.getAttribute("data-action");
 
@@ -475,11 +669,11 @@ export class AiIllustrationElement extends BaseHTMLElement {
             : current === "sketch"
             ? "blueprint"
             : "clean";
+        this.lastRenderKey = "";
         this.render();
       } else if (action === "toggle-compact") {
-        const currentCompact =
-          this.forceCompact ?? this.containerWidth < 620;
-        this.forceCompact = !currentCompact;
+        this.forceCompact = !this.computeIsCompact();
+        this.lastRenderKey = "";
         this.render();
       } else if (action === "fullscreen") {
         this.openFullscreenLightbox();
@@ -491,9 +685,25 @@ export class AiIllustrationElement extends BaseHTMLElement {
     });
   }
 
+  private closeFullscreenLightbox(): void {
+    this.lightboxAbort?.abort();
+    this.lightboxAbort = undefined;
+    if (this.modalHostEl) {
+      this.modalHostEl.textContent = "";
+    }
+  }
+
   private openFullscreenLightbox(): void {
-    if (!this.currentScene) return;
-    const svgHtml = renderSceneGraphToSvgString(this.currentScene);
+    if (!this.currentScene || !this.modalHostEl) return;
+    this.closeFullscreenLightbox();
+
+    const abortController = new AbortController();
+    this.lightboxAbort = abortController;
+    const { signal } = abortController;
+
+    const svgHtml = renderSceneGraphToSvgString(this.currentScene, {
+      idPrefix: `${this.instancePrefix}-modal`,
+    });
     const modal = document.createElement("div");
     modal.className = "ai-ill-modal";
     modal.innerHTML = `
@@ -532,62 +742,103 @@ export class AiIllustrationElement extends BaseHTMLElement {
         scale = Math.max(0.4, Math.min(4, scale * factor));
         updateTransform();
       },
-      { passive: false }
+      { passive: false, signal }
     );
 
-    viewportEl.addEventListener("mousedown", (e) => {
-      dragging = true;
-      startX = e.clientX - tx;
-      startY = e.clientY - ty;
-    });
+    viewportEl.addEventListener(
+      "mousedown",
+      (e) => {
+        dragging = true;
+        startX = e.clientX - tx;
+        startY = e.clientY - ty;
+      },
+      { signal }
+    );
 
-    window.addEventListener("mousemove", (e) => {
-      if (!dragging) return;
-      tx = e.clientX - startX;
-      ty = e.clientY - startY;
-      updateTransform();
-    });
-
-    window.addEventListener("mouseup", () => {
-      dragging = false;
-    });
-
-    modal.addEventListener("click", (e) => {
-      const target = e.target as HTMLElement;
-      const act = target.getAttribute("data-modal-action");
-      if (act === "close" || target === modal) {
-        modal.remove();
-      } else if (act === "reset") {
-        scale = 1;
-        tx = 0;
-        ty = 0;
+    window.addEventListener(
+      "mousemove",
+      (e) => {
+        if (!dragging) return;
+        tx = e.clientX - startX;
+        ty = e.clientY - startY;
         updateTransform();
-      }
-    });
+      },
+      { signal }
+    );
 
-    this.shadow.appendChild(modal);
+    window.addEventListener(
+      "mouseup",
+      () => {
+        dragging = false;
+      },
+      { signal }
+    );
+
+    window.addEventListener(
+      "keydown",
+      (e) => {
+        if (e.key === "Escape") {
+          this.closeFullscreenLightbox();
+        }
+      },
+      { signal }
+    );
+
+    modal.addEventListener(
+      "click",
+      (e) => {
+        const target = e.target as HTMLElement;
+        const act = target.getAttribute("data-modal-action");
+        if (act === "close" || target === modal) {
+          this.closeFullscreenLightbox();
+        } else if (act === "reset") {
+          scale = 1;
+          tx = 0;
+          ty = 0;
+          updateTransform();
+        }
+      },
+      { signal }
+    );
+
+    this.modalHostEl.appendChild(modal);
+  }
+
+  private flashButtonFeedback(
+    btn: HTMLElement,
+    message: string,
+    durationMs = 1500
+  ): void {
+    const original = btn.dataset.origLabel || btn.textContent || "";
+    btn.dataset.origLabel = original;
+    btn.textContent = message;
+    setTimeout(() => {
+      btn.textContent = original;
+    }, durationMs);
   }
 
   private async copyCurrentSvg(btn: HTMLElement): Promise<void> {
     if (!this.currentScene) return;
-    const svgString = renderSceneGraphToSvgString(this.currentScene);
+    const svgString = renderSceneGraphToSvgString(this.currentScene, {
+      idPrefix: `ill-${Date.now().toString(36)}`,
+    });
     try {
       await navigator.clipboard.writeText(svgString);
-      const original = btn.textContent;
-      btn.textContent = "✓ 已复制";
-      setTimeout(() => {
-        btn.textContent = original;
-      }, 1400);
+      this.flashButtonFeedback(btn, "✓ 已复制", 1400);
     } catch {
-      // Fallback ignored
+      this.flashButtonFeedback(btn, "⚠ 复制失败", 1600);
     }
   }
 
   private exportCurrentThemePng(btn: HTMLElement): void {
     if (!this.currentScene) return;
     const scene = this.currentScene;
-    const svgString = renderSceneGraphToSvgString(scene);
-    const scale = 2; // 2x Retina HiDPI export
+    // Note: SVG rendered inside <img> is sandboxed by browsers and will not fetch external @font-face files;
+    // standard system/fallback font stacks from ThemeTokens are used automatically.
+    const svgString = renderSceneGraphToSvgString(scene, {
+      idPrefix: `${this.instancePrefix}-png`,
+    });
+    const scale = computeSafePngExportScale(scene.width, scene.height, 2);
 
     const blob = new Blob([svgString], {
       type: "image/svg+xml;charset=utf-8",
@@ -595,33 +846,44 @@ export class AiIllustrationElement extends BaseHTMLElement {
     const url = URL.createObjectURL(blob);
     const img = new Image();
 
-    img.onload = () => {
-      const canvas = document.createElement("canvas");
-      canvas.width = scene.width * scale;
-      canvas.height = scene.height * scale;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return;
-
-      ctx.fillStyle = scene.theme.colors.bg;
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    img.onerror = () => {
       URL.revokeObjectURL(url);
+      this.flashButtonFeedback(btn, "⚠ 导出失败", 1800);
+    };
 
-      canvas.toBlob((pngBlob) => {
-        if (!pngBlob) return;
-        const dlUrl = URL.createObjectURL(pngBlob);
-        const a = document.createElement("a");
-        a.href = dlUrl;
-        a.download = `${(scene.title || "illustration").replace(/\s+/g, "-").toLowerCase()}-${scene.theme.mode}.png`;
-        a.click();
-        URL.revokeObjectURL(dlUrl);
-      }, "image/png");
+    img.onload = () => {
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(scene.width * scale));
+        canvas.height = Math.max(1, Math.round(scene.height * scale));
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          this.flashButtonFeedback(btn, "⚠ 导出失败", 1800);
+          return;
+        }
 
-      const original = btn.textContent;
-      btn.textContent = "✓ PNG";
-      setTimeout(() => {
-        btn.textContent = original;
-      }, 1400);
+        ctx.fillStyle = scene.theme.colors.bg;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+        canvas.toBlob((pngBlob) => {
+          if (!pngBlob) {
+            this.flashButtonFeedback(btn, "⚠ 导出失败", 1800);
+            return;
+          }
+          const dlUrl = URL.createObjectURL(pngBlob);
+          const a = document.createElement("a");
+          a.href = dlUrl;
+          a.download = `${(scene.title || "illustration").replace(/\s+/g, "-").toLowerCase()}-${scene.theme.mode}.png`;
+          a.click();
+          setTimeout(() => URL.revokeObjectURL(dlUrl), 1000);
+          this.flashButtonFeedback(btn, "✓ PNG", 1400);
+        }, "image/png");
+      } catch {
+        this.flashButtonFeedback(btn, "⚠ 导出失败", 1800);
+      } finally {
+        URL.revokeObjectURL(url);
+      }
     };
 
     img.src = url;

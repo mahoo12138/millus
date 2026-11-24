@@ -1,18 +1,36 @@
 {
   "name": "millus",
-  "version": "0.1.0",
+  "version": "0.1.0-alpha.1",
   "description": "millus — AI-driven, theme-reactive technical illustration framework and Web Component runtime for Markdown/MDX blogs",
   "type": "module",
-  "main": "./dist/millus.bundle.js",
+  "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "exports": {
-    ".": "./dist/millus.bundle.js",
-    "./remark": "./dist/integrations/remark-plugin.js",
-    "./prompt": "./dist/schema/ai-prompt.js"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./browser": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/millus.bundle.js"
+    },
+    "./remark": {
+      "types": "./dist/integrations/remark-plugin.d.ts",
+      "import": "./dist/integrations/remark-plugin.js"
+    },
+    "./prompt": {
+      "types": "./dist/schema/ai-prompt.d.ts",
+      "import": "./dist/schema/ai-prompt.js"
+    }
   },
   "scripts": {
     "build": "node --experimental-strip-types scripts/build-bundle.ts",
-    "test": "node --experimental-strip-types test/compiler.test.ts"
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test test/compiler.test.ts"
   },
   "keywords": [
     "ai",
@@ -24,5 +42,9 @@
     "diagram",
     "scene-graph"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
+  }
 }

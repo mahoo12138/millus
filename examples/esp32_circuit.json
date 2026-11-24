@@ -1,0 +1,313 @@
+{
+  "title": "基于 ESP32-S3 的端侧 AI 语音唤醒与 I2S / FSPI 外设电路设计蓝图",
+  "style": {
+    "preset": "blueprint"
+  },
+  "canvas": {
+    "background": "grid",
+    "padding": 36
+  },
+  "elements": [
+    {
+      "id": "pwr_domain",
+      "type": "group",
+      "title": "1. USB-C 供电与 3.3V LDO 滤波电路",
+      "layout": {
+        "type": "flex",
+        "direction": "column",
+        "gap": 16
+      },
+      "style": {
+        "tone": "warning",
+        "variant": "outlined"
+      },
+      "children": [
+        {
+          "id": "usb_typec",
+          "type": "card",
+          "icon": "zap",
+          "title": "USB Type-C 16P 接口",
+          "badge": "VBUS 5.0V",
+          "body": "CC1/CC2 接 5.1kΩ 下拉电阻 + USBLC6-2SC6 双路 TVS 静电防护",
+          "style": {
+            "tone": "warning",
+            "variant": "soft"
+          }
+        },
+        {
+          "id": "ldo_reg",
+          "type": "card",
+          "icon": "cpu",
+          "title": "ME6211C33 / AMS1117-3.3",
+          "badge": "3.3V @ 800mA",
+          "body": "输入 10μF + 输出 22μF/100nF 多级陶瓷退耦电容，抑制 Wi-Fi 射频尖峰",
+          "style": {
+            "tone": "success",
+            "variant": "soft"
+          }
+        }
+      ]
+    },
+    {
+      "id": "opi_psram",
+      "type": "cylinder",
+      "label": "8MB Octal SPI PSRAM + 16MB Flash",
+      "sublabel": "120MHz DDR 八线总线 — 常驻 ESP-SR WakeNet9 语音模型",
+      "place": {
+        "below": "pwr_domain",
+        "gap": 44,
+        "align": "start"
+      },
+      "style": {
+        "tone": "info",
+        "variant": "soft"
+      }
+    },
+    {
+      "id": "esp32_s3_pinout",
+      "type": "table",
+      "title": "2. ESP32-S3-WROOM-1 (Xtensa LX7 双核 240MHz + SIMD 向量指令) 总线矩阵",
+      "place": {
+        "rightOf": "pwr_domain",
+        "gap": 68,
+        "align": "start"
+      },
+      "headers": [
+        "GPIO 引脚组",
+        "外设控制器",
+        "原理图网络标号 (NetLabel)",
+        "信号流向"
+      ],
+      "rows": [
+        [
+          "GPIO 4 / 5 / 6",
+          "I2S0_MCLK / BCLK / DOUT",
+          {
+            "text": "MIC_SCK / MIC_WS / MIC_SD",
+            "tone": "primary"
+          },
+          "← 麦克风采样输入"
+        ],
+        [
+          "GPIO 15 / 16 / 17",
+          "I2S1_BCLK / LRCK / DIN",
+          {
+            "text": "AMP_BCLK / AMP_LRC / AMP_DIN",
+            "tone": "success"
+          },
+          "→ 数字功放输出"
+        ],
+        [
+          "GPIO 10 / 11 / 12 / 13",
+          "FSPI_CS / CLK / MOSI / DC",
+          {
+            "text": "LCD_CS / SCK / SDA / RS",
+            "tone": "accent"
+          },
+          "→ 80MHz 彩屏 DMA"
+        ],
+        [
+          "GPIO 19 / 20",
+          "USB_SERIAL_JTAG",
+          {
+            "text": "USB_D_N / USB_D_P (90Ω 差分)",
+            "tone": "warning"
+          },
+          "↔ 原生 USB 调试"
+        ],
+        [
+          "GPIO 26 .. 32",
+          "SPI0/1 Octal OPI",
+          {
+            "text": "PSRAM_CLK / CS / D0..D7",
+            "tone": "info"
+          },
+          "↔ 高速 PSRAM 映射"
+        ]
+      ],
+      "style": {
+        "tone": "primary",
+        "variant": "outlined"
+      }
+    },
+    {
+      "id": "note_gdma",
+      "type": "callout",
+      "text": "I2S0 采样数据经 GDMA 控制器直接搬运至内部 SRAM 环形队列，零 CPU 干预喂入 ESP-SR 唤醒引擎",
+      "target": "esp32_s3_pinout.cell_0_0",
+      "side": "top",
+      "style": {
+        "tone": "info"
+      }
+    },
+    {
+      "id": "gdma_reg",
+      "type": "bitfield",
+      "title": "ESP32-S3 I2S_RX_CONF_REG (0x6000F020) 硬件音频寄存器位图",
+      "totalBits": 32,
+      "place": {
+        "below": "esp32_s3_pinout",
+        "gap": 44,
+        "align": "start"
+      },
+      "fields": [
+        {
+          "name": "RX_START",
+          "bits": 2,
+          "value": "0b1",
+          "tone": "success"
+        },
+        {
+          "name": "SLAVE_MOD",
+          "bits": 2,
+          "value": "0 Master",
+          "tone": "primary"
+        },
+        {
+          "name": "TDM_PHILIPS",
+          "bits": 4,
+          "value": "I2S 标准",
+          "tone": "info"
+        },
+        {
+          "name": "BITS_MOD",
+          "bits": 8,
+          "value": "24-bit PCM",
+          "tone": "accent"
+        },
+        {
+          "name": "CLKM_DIV",
+          "bits": 8,
+          "value": "16kHz 采样",
+          "tone": "warning"
+        },
+        {
+          "name": "DMA_EOF_NUM",
+          "bits": 8,
+          "value": "512 Frame",
+          "tone": "primary"
+        }
+      ]
+    },
+    {
+      "id": "periph_modules",
+      "type": "group",
+      "title": "3. 声学采集、功放与 IPS 显示外设电路",
+      "place": {
+        "rightOf": "esp32_s3_pinout",
+        "gap": 68,
+        "align": "start"
+      },
+      "layout": {
+        "type": "flex",
+        "direction": "column",
+        "gap": 16
+      },
+      "style": {
+        "tone": "accent",
+        "variant": "outlined"
+      },
+      "children": [
+        {
+          "id": "inmp441",
+          "type": "card",
+          "icon": "sparkles",
+          "title": "INMP441 全向数字 MEMS 麦克风",
+          "badge": "24-bit I2S",
+          "body": "L/R 引脚接地配置左声道，VDD 并联 100nF 退耦电容紧靠芯片引脚",
+          "style": {
+            "tone": "primary",
+            "variant": "soft"
+          }
+        },
+        {
+          "id": "max98357a",
+          "type": "card",
+          "icon": "zap",
+          "title": "MAX98357A D类数字音频功放",
+          "badge": "3.2W @ 4Ω",
+          "body": "无需 MCLK 晶振，GAIN 引脚串 100kΩ 配置 +12dB 增益驱动腔体喇叭",
+          "style": {
+            "tone": "success",
+            "variant": "soft"
+          }
+        },
+        {
+          "id": "st7789_tft",
+          "type": "card",
+          "icon": "layers",
+          "title": "1.54寸 ST7789 IPS 彩屏 (240×240)",
+          "badge": "FSPI DMA",
+          "body": "LVGL 双缓冲异步刷屏 + 2N7002 MOSFET 控制 LEDK 呼吸背光",
+          "style": {
+            "tone": "accent",
+            "variant": "soft"
+          }
+        }
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "from": "usb_typec@bottom",
+      "to": "ldo_reg@top",
+      "label": "VBUS 5V 输入",
+      "tone": "warning"
+    },
+    {
+      "from": "usb_typec@right",
+      "to": "esp32_s3_pinout.cell_3_0@left",
+      "label": "D+/D- 90Ω 差分对",
+      "tone": "warning"
+    },
+    {
+      "from": "ldo_reg@right",
+      "to": "esp32_s3_pinout@left",
+      "label": "VDD3P3 主电源轨",
+      "tone": "success",
+      "animation": {
+        "type": "pulse"
+      }
+    },
+    {
+      "from": "esp32_s3_pinout.cell_4_0@left",
+      "to": "opi_psram@right",
+      "label": "120MHz Octal Bus",
+      "tone": "info",
+      "animation": {
+        "type": "flow"
+      }
+    },
+    {
+      "from": "inmp441@left",
+      "to": "esp32_s3_pinout.cell_0_3@right",
+      "label": "16kHz PCM 音频流",
+      "tone": "primary",
+      "animation": {
+        "type": "pulse",
+        "speed": "fast"
+      }
+    },
+    {
+      "from": "esp32_s3_pinout.cell_1_3@right",
+      "to": "max98357a@left",
+      "label": "I2S1 TTS 播报流",
+      "tone": "success"
+    },
+    {
+      "from": "esp32_s3_pinout.cell_2_3@right",
+      "to": "st7789_tft@left",
+      "label": "80MHz SPI 帧传输",
+      "tone": "accent",
+      "animation": {
+        "type": "flow"
+      }
+    },
+    {
+      "from": "gdma_reg.field_6@top",
+      "to": "esp32_s3_pinout@bottom",
+      "label": "GDMA IN_SUC_EOF 中断",
+      "tone": "primary"
+    }
+  ]
+}

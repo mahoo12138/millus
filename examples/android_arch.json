@@ -1,0 +1,281 @@
+{
+  "title": "Android 系统五层架构全景与 Binder IPC / HAL 跨层通信拓扑",
+  "canvas": {
+    "background": "grid",
+    "padding": 36
+  },
+  "elements": [
+    {
+      "id": "app_tier",
+      "type": "group",
+      "title": "1. System Apps & Jetpack Compose 应用层",
+      "layout": {
+        "type": "flex",
+        "direction": "row",
+        "gap": 20
+      },
+      "style": {
+        "tone": "primary",
+        "variant": "outlined"
+      },
+      "children": [
+        {
+          "id": "compose_ui",
+          "type": "card",
+          "icon": "sparkles",
+          "title": "Jetpack Compose / View 树",
+          "badge": "UI Thread",
+          "body": "Choreographer 接收 VSync 信号 → 执行测量、布局与 RenderNode 录制",
+          "style": {
+            "tone": "primary",
+            "variant": "soft"
+          }
+        },
+        {
+          "id": "activity_thread",
+          "type": "card",
+          "icon": "layers",
+          "title": "ActivityThread & Looper",
+          "badge": "App Process",
+          "body": "epoll 驱动主线程 MessageQueue，通过 ApplicationThread 响应 AMS 调度",
+          "style": {
+            "tone": "info",
+            "variant": "soft"
+          }
+        }
+      ]
+    },
+    {
+      "id": "fw_tier",
+      "type": "group",
+      "title": "2. Java API Framework (system_server 核心系统服务层)",
+      "place": {
+        "below": "app_tier",
+        "gap": 44,
+        "align": "start"
+      },
+      "layout": {
+        "type": "flex",
+        "direction": "row",
+        "gap": 20
+      },
+      "style": {
+        "tone": "secondary",
+        "variant": "outlined"
+      },
+      "children": [
+        {
+          "id": "wms_svc",
+          "type": "card",
+          "icon": "layers",
+          "title": "WindowManagerService (WMS)",
+          "badge": "WindowToken",
+          "body": "管理全局窗口 Surface 树、Z-Order 层级与 InputDispatcher 触控分发",
+          "style": {
+            "tone": "secondary",
+            "variant": "soft"
+          }
+        },
+        {
+          "id": "atms_svc",
+          "type": "card",
+          "icon": "cpu",
+          "title": "ActivityTaskManager (ATMS)",
+          "badge": "AMS / PMS",
+          "body": "管控 Activity 任务栈生命周期、进程 OomAdj 优先级与包管理服务",
+          "style": {
+            "tone": "primary",
+            "variant": "soft"
+          }
+        }
+      ]
+    },
+    {
+      "id": "native_tier",
+      "type": "group",
+      "title": "3. Native Daemons & Android Runtime (ART 虚拟机与图形合成)",
+      "place": {
+        "below": "fw_tier",
+        "gap": 44,
+        "align": "start"
+      },
+      "layout": {
+        "type": "flex",
+        "direction": "row",
+        "gap": 20
+      },
+      "style": {
+        "tone": "accent",
+        "variant": "outlined"
+      },
+      "children": [
+        {
+          "id": "surface_flinger",
+          "type": "card",
+          "icon": "zap",
+          "title": "SurfaceFlinger & RenderEngine",
+          "badge": "BLASTBufferQueue",
+          "body": "消费各应用 GraphicBuffer 图层 → 构建合成列表委托 HWC 硬件叠层",
+          "style": {
+            "tone": "accent",
+            "variant": "soft"
+          }
+        },
+        {
+          "id": "art_runtime",
+          "type": "card",
+          "icon": "code",
+          "title": "Android Runtime (ART) & Zygote",
+          "badge": "AOT + JIT",
+          "body": "dex2oat 混合编译、Generational CC 并发垃圾回收与写时复制进程孵化",
+          "style": {
+            "tone": "warning",
+            "variant": "soft"
+          }
+        }
+      ]
+    },
+    {
+      "id": "binder_ipc_bus",
+      "type": "queue",
+      "label": "Binder IPC 零拷贝通信总线",
+      "sublabel": "mmap 128KB 内核映射 (仅一次拷贝) + AIDL ServiceManager 寻址",
+      "place": {
+        "rightOf": "fw_tier",
+        "gap": 68,
+        "align": "center"
+      },
+      "style": {
+        "tone": "info",
+        "variant": "soft"
+      }
+    },
+    {
+      "id": "hal_matrix",
+      "type": "table",
+      "title": "4. Hardware Abstraction Layer (AIDL / HIDL 硬件抽象层)",
+      "place": {
+        "below": "binder_ipc_bus",
+        "gap": 44,
+        "align": "start"
+      },
+      "headers": [
+        "HAL 子系统",
+        "IPC 传输机制",
+        "独立守护进程"
+      ],
+      "rows": [
+        [
+          "Composer HAL",
+          {
+            "text": "AIDL + Fence 同步栅栏",
+            "tone": "accent"
+          },
+          "vendor.hwcomposer-service"
+        ],
+        [
+          "Camera HAL3",
+          {
+            "text": "FMQ 快速消息队列 + Gralloc",
+            "tone": "primary"
+          },
+          "camerahalserver"
+        ],
+        [
+          "Audio / NNAPI",
+          {
+            "text": "ashmem 匿名共享内存",
+            "tone": "success"
+          },
+          "audioserver / neuralnetworks"
+        ]
+      ],
+      "style": {
+        "tone": "success",
+        "variant": "outlined"
+      }
+    },
+    {
+      "id": "linux_kernel",
+      "type": "cylinder",
+      "label": "5. Linux Kernel (Binder Driver / DRM-KMS / ION-DMA-BUF / WakeLocks)",
+      "sublabel": "安全隔离 (SELinux) + 内存共享 (dma_buf) + 硬件设备驱动",
+      "place": {
+        "below": "native_tier",
+        "gap": 48,
+        "align": "center"
+      },
+      "style": {
+        "tone": "success",
+        "variant": "soft",
+        "elevation": "md"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "from": "compose_ui@bottom",
+      "to": "wms_svc@top",
+      "label": "relayoutWindow",
+      "tone": "primary"
+    },
+    {
+      "from": "activity_thread@bottom",
+      "to": "atms_svc@top",
+      "label": "IActivityClientController",
+      "tone": "info"
+    },
+    {
+      "from": "wms_svc@bottom",
+      "to": "surface_flinger@top",
+      "label": "BLAST 图层事务",
+      "tone": "accent",
+      "animation": {
+        "type": "pulse"
+      }
+    },
+    {
+      "from": "atms_svc@bottom",
+      "to": "art_runtime@top",
+      "label": "Zygote Socket 孵化",
+      "tone": "warning"
+    },
+    {
+      "from": "atms_svc@right",
+      "to": "binder_ipc_bus@left",
+      "label": "Binder 事务分发",
+      "tone": "info",
+      "animation": {
+        "type": "flow"
+      }
+    },
+    {
+      "from": "binder_ipc_bus@bottom",
+      "to": "hal_matrix@top",
+      "label": "跨进程 Vendor AIDL",
+      "tone": "info"
+    },
+    {
+      "from": "surface_flinger@right",
+      "to": "hal_matrix.cell_0_0@left",
+      "label": "validateDisplay / present",
+      "tone": "accent",
+      "animation": {
+        "type": "pulse",
+        "speed": "fast"
+      }
+    },
+    {
+      "from": "surface_flinger@bottom",
+      "to": "linux_kernel@top",
+      "label": "DRM/KMS 原子翻页",
+      "tone": "success"
+    },
+    {
+      "from": "hal_matrix@bottom",
+      "to": "linux_kernel@right",
+      "label": "ioctl / dma_buf 驱动调用",
+      "tone": "success"
+    }
+  ]
+}

@@ -1,0 +1,177 @@
+{
+  "title": "构建期与运行时协同 AI 插画管线",
+  "canvas": {
+    "background": "dots",
+    "padding": 32
+  },
+  "elements": [
+    {
+      "id": "mdx_source",
+      "type": "code-block",
+      "title": "post.mdx",
+      "lang": "yaml",
+      "code": "# 架构解析\n```illustration\nelements:\n  - id: api_gw\n    type: card\n```",
+      "highlightLines": [
+        2,
+        3,
+        4,
+        5
+      ],
+      "style": {
+        "tone": "primary",
+        "elevation": "sm"
+      }
+    },
+    {
+      "id": "runtime_group",
+      "type": "group",
+      "title": "<ai-illustration> 浏览器运行时",
+      "place": {
+        "rightOf": "mdx_source",
+        "gap": 54,
+        "align": "center"
+      },
+      "layout": {
+        "type": "flex",
+        "direction": "column",
+        "gap": 16
+      },
+      "style": {
+        "tone": "primary",
+        "variant": "dashed"
+      },
+      "children": [
+        {
+          "id": "theme_observer",
+          "type": "card",
+          "icon": "sparkles",
+          "title": "1. ThemeObserver 主题嗅探",
+          "badge": "Reactive",
+          "body": "监听 html.dark 与宿主 CSS 变量变化",
+          "style": {
+            "tone": "info",
+            "variant": "soft"
+          }
+        },
+        {
+          "id": "layout_engine",
+          "type": "card",
+          "icon": "layers",
+          "title": "2. 混合布局与正交寻路",
+          "body": "Canvas 真实字体测量 → 拓扑求解",
+          "style": {
+            "tone": "primary",
+            "variant": "soft"
+          }
+        }
+      ]
+    },
+    {
+      "id": "token_table",
+      "type": "table",
+      "title": "运行时主题 Token 映射表",
+      "place": {
+        "rightOf": "runtime_group",
+        "gap": 54,
+        "align": "start"
+      },
+      "headers": [
+        "语义 Token",
+        "宿主变量绑定"
+      ],
+      "rows": [
+        [
+          "primary",
+          {
+            "text": "var(--blog-primary)",
+            "tone": "primary"
+          }
+        ],
+        [
+          "surface",
+          {
+            "text": "var(--blog-card-bg)",
+            "tone": "success"
+          }
+        ]
+      ],
+      "style": {
+        "tone": "success",
+        "variant": "outlined"
+      }
+    },
+    {
+      "id": "svg_dom",
+      "type": "card",
+      "icon": "cpu",
+      "title": "响应式 SVG DOM",
+      "badge": "60fps",
+      "body": "支持代码行联动高亮、流光粒子与 2x PNG 导出",
+      "place": {
+        "below": "token_table",
+        "gap": 28,
+        "align": "start"
+      },
+      "style": {
+        "tone": "success",
+        "variant": "filled",
+        "elevation": "md"
+      }
+    },
+    {
+      "id": "note_1",
+      "type": "callout",
+      "text": "按行号 mdx_source.line_2 直接引出箭头，无需手算坐标！",
+      "target": "mdx_source.line_2",
+      "side": "top",
+      "style": {
+        "tone": "warning"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": "e1",
+      "from": "mdx_source.line_2@right",
+      "to": "theme_observer@left",
+      "label": "JSON Spec",
+      "routing": "curved",
+      "tone": "primary",
+      "animation": {
+        "type": "pulse",
+        "speed": "normal"
+      }
+    },
+    {
+      "id": "e2",
+      "from": "theme_observer@right",
+      "to": "token_table.cell_0_1@left",
+      "label": "getComputedStyle",
+      "routing": "orthogonal",
+      "strokeStyle": "dashed",
+      "tone": "info",
+      "animation": {
+        "type": "flow"
+      }
+    },
+    {
+      "id": "e3",
+      "from": "theme_observer@bottom",
+      "to": "layout_engine@top",
+      "label": "重算色彩与度量",
+      "tone": "primary"
+    },
+    {
+      "id": "e4",
+      "from": "layout_engine@right",
+      "to": "svg_dom@left",
+      "label": "渲染 SceneGraph",
+      "routing": "orthogonal",
+      "tone": "success",
+      "animation": {
+        "type": "pulse",
+        "speed": "fast"
+      }
+    }
+  ]
+}

@@ -1,0 +1,252 @@
+{
+  "title": "浏览器打开 URL 到屏幕像素上屏全链路 (Navigation → Blink → Compositor → GPU)",
+  "canvas": {
+    "background": "grid",
+    "padding": 36
+  },
+  "elements": [
+    {
+      "id": "net_seq",
+      "type": "sequence",
+      "title": "1. Browser & Network 进程：DNS / QUIC / TLS 1.3 握手",
+      "actors": [
+        {
+          "id": "ui_proc",
+          "label": "Browser 主进程",
+          "sublabel": "UI / Navigation",
+          "tone": "primary"
+        },
+        {
+          "id": "net_proc",
+          "label": "Network 进程",
+          "sublabel": "Socket / Cache",
+          "tone": "info"
+        },
+        {
+          "id": "cdn_edge",
+          "label": "CDN / Origin",
+          "sublabel": "HTTP/3 QUIC",
+          "tone": "success"
+        }
+      ],
+      "messages": [
+        {
+          "from": "ui_proc",
+          "to": "net_proc",
+          "label": "NavigationRequest(https://...)",
+          "type": "sync",
+          "tone": "primary"
+        },
+        {
+          "from": "net_proc",
+          "to": "net_proc",
+          "label": "HSTS 预加载 & ServiceWorker 拦截检查",
+          "tone": "warning"
+        },
+        {
+          "from": "net_proc",
+          "to": "cdn_edge",
+          "label": "DNS + QUIC 0-RTT + TLS 1.3 Early Data",
+          "type": "sync",
+          "tone": "info"
+        },
+        {
+          "from": "cdn_edge",
+          "to": "net_proc",
+          "label": "200 OK (text/html 分块字节流)",
+          "type": "reply",
+          "tone": "success"
+        }
+      ]
+    },
+    {
+      "id": "disk_cache",
+      "type": "cylinder",
+      "label": "HTTP Disk & Memory Cache",
+      "sublabel": "Cache-Control / ETag / Brotli 字典",
+      "place": {
+        "below": "net_seq",
+        "gap": 44,
+        "align": "center"
+      },
+      "style": {
+        "tone": "info",
+        "variant": "soft",
+        "elevation": "sm"
+      }
+    },
+    {
+      "id": "renderer_win",
+      "type": "window",
+      "title": "2. Renderer 渲染进程 (Blink 主线程 + Compositor 合成线程)",
+      "url": "chrome://tracing/blink-compositor-pipeline",
+      "place": {
+        "rightOf": "net_seq",
+        "gap": 68,
+        "align": "start"
+      },
+      "layout": {
+        "type": "flex",
+        "direction": "column",
+        "gap": 16
+      },
+      "style": {
+        "tone": "primary",
+        "variant": "outlined"
+      },
+      "children": [
+        {
+          "id": "blink_parser",
+          "type": "card",
+          "icon": "code",
+          "title": "HTML / CSS 流式解析器",
+          "badge": "Main Thread",
+          "body": "预加载扫描器 PreloadScanner 并行拉取资源 → 构建 DOM 树与 CSSOM 树",
+          "style": {
+            "tone": "primary",
+            "variant": "soft"
+          }
+        },
+        {
+          "id": "layout_layer",
+          "type": "card",
+          "icon": "layers",
+          "title": "Style → LayoutNG → Pre-Paint",
+          "badge": "Layout Tree",
+          "body": "计算精确几何盒模型与 PropertyTrees (Transform/Clip/Effect) → 生成 PaintArtifact",
+          "style": {
+            "tone": "secondary",
+            "variant": "soft"
+          }
+        },
+        {
+          "id": "cc_impl",
+          "type": "card",
+          "icon": "cpu",
+          "title": "Compositor 合成器线程 (Impl Thread)",
+          "badge": "VSync 驱动",
+          "body": "将图层切分为 256×256 图块 (Tiles) → 分发给 Worker 线程池做 GPU 光栅化",
+          "style": {
+            "tone": "accent",
+            "variant": "soft"
+          }
+        }
+      ]
+    },
+    {
+      "id": "frame_sink_q",
+      "type": "queue",
+      "label": "CompositorFrameSink (Mojo IPC)",
+      "sublabel": "打包 DrawQuads 提交至 Viz 进程",
+      "place": {
+        "below": "renderer_win",
+        "gap": 44,
+        "align": "center"
+      },
+      "style": {
+        "tone": "accent",
+        "variant": "soft"
+      }
+    },
+    {
+      "id": "viz_gpu_table",
+      "type": "table",
+      "title": "3. Viz / GPU 进程硬件加速合成与屏幕扫描上屏",
+      "place": {
+        "rightOf": "renderer_win",
+        "gap": 64,
+        "align": "start"
+      },
+      "headers": [
+        "流水线阶段",
+        "执行引擎",
+        "图形缓冲产物"
+      ],
+      "rows": [
+        [
+          "1. Tile Raster",
+          {
+            "text": "Skia Graphite / Ganesh",
+            "tone": "info"
+          },
+          "GPU 显存纹理 (SharedImage)"
+        ],
+        [
+          "2. Surface 聚合",
+          {
+            "text": "Viz DisplayCompositor",
+            "tone": "primary"
+          },
+          "合并浏览器 UI 与网页帧"
+        ],
+        [
+          "3. 硬件呈现",
+          {
+            "text": "Vulkan / Metal SwapChain",
+            "tone": "success"
+          },
+          "120Hz VSync 屏幕像素上屏"
+        ]
+      ],
+      "style": {
+        "tone": "success",
+        "variant": "outlined"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "from": "net_seq.net_proc@bottom",
+      "to": "disk_cache@top",
+      "label": "强缓存/协商缓存读写",
+      "tone": "info",
+      "strokeStyle": "dashed"
+    },
+    {
+      "from": "net_seq@right",
+      "to": "blink_parser@left",
+      "label": "CommitNavigation (Mojo DataPipe)",
+      "tone": "success",
+      "animation": {
+        "type": "pulse",
+        "speed": "fast"
+      }
+    },
+    {
+      "from": "blink_parser@bottom",
+      "to": "layout_layer@top",
+      "label": "DOM + CSSOM 挂载",
+      "tone": "primary"
+    },
+    {
+      "from": "layout_layer@bottom",
+      "to": "cc_impl@top",
+      "label": "Commit 图层树同步",
+      "tone": "secondary"
+    },
+    {
+      "from": "cc_impl@bottom",
+      "to": "frame_sink_q@top",
+      "label": "生成 CompositorFrame",
+      "tone": "accent",
+      "animation": {
+        "type": "flow"
+      }
+    },
+    {
+      "from": "cc_impl@right",
+      "to": "viz_gpu_table.cell_0_0@left",
+      "label": "OOP-R 硬件光栅化指令",
+      "tone": "info"
+    },
+    {
+      "from": "frame_sink_q@right",
+      "to": "viz_gpu_table.cell_1_0@left",
+      "label": "SubmitCompositorFrame",
+      "tone": "accent",
+      "animation": {
+        "type": "pulse"
+      }
+    }
+  ]
+}

@@ -8,37 +8,45 @@
  *  5. Mobile Responsive Reflow (compactViewport mode)
  */
 
-import type {
-  BadgeElementSpec,
-  BitfieldElementSpec,
-  BoundingBox,
-  CalloutElementSpec,
-  CardElementSpec,
-  CodeBlockElementSpec,
-  ConnectionSpec,
-  ElementSpec,
-  GroupElementSpec,
-  IconElementSpec,
-  IllustrationSpec,
-  LayoutConfig,
-  PathElementSpec,
-  PlaceSpec,
-  PolygonElementSpec,
-  PrimitiveDecoration,
-  RectElementSpec,
-  ResolvedThemeTokens,
-  SceneNode,
-  SemanticTone,
-  SequenceElementSpec,
-  SubAnchorRenderItem,
-  SyntaxTokenSpan,
-  TableCellInput,
-  TableElementSpec,
-  TerminalElementSpec,
-  TextElementSpec,
+import {
+  coerceFiniteNumber,
+  sanitizeSvgPathD,
+  VALID_CALLOUT_SIDES,
+  type BadgeElementSpec,
+  type BitfieldElementSpec,
+  type BoundingBox,
+  type CalloutElementSpec,
+  type CardElementSpec,
+  type CodeBlockElementSpec,
+  type ConnectionSpec,
+  type ElementSpec,
+  type GroupElementSpec,
+  type IconElementSpec,
+  type IllustrationSpec,
+  type LayoutConfig,
+  type PathElementSpec,
+  type PlaceSpec,
+  type PolygonElementSpec,
+  type PrimitiveDecoration,
+  type RectElementSpec,
+  type ResolvedThemeTokens,
+  type SceneNode,
+  type SemanticTone,
+  type SequenceElementSpec,
+  type SubAnchorRenderItem,
+  type SyntaxTokenSpan,
+  type TableCellInput,
+  type TableElementSpec,
+  type TerminalElementSpec,
+  type TextElementSpec,
 } from "../schema/spec.ts";
 import { TextMeasurer } from "../runtime/text-measurer.ts";
-import { mixColors, resolveNodeStyle } from "../runtime/theme-observer.ts";
+import {
+  getTonePalette,
+  mixColors,
+  normalizeTone,
+  resolveNodeStyle,
+} from "../runtime/theme-observer.ts";
 
 export interface LayoutOptions {
   compactViewport?: boolean;
@@ -56,9 +64,41 @@ function normalizePadding(
   defaultPad: [number, number, number, number]
 ): [number, number, number, number] {
   if (pad === undefined) return defaultPad;
-  if (typeof pad === "number") return [pad, pad, pad, pad];
-  if (pad.length === 2) return [pad[0], pad[1], pad[0], pad[1]];
-  return pad;
+  const single = coerceFiniteNumber(pad);
+  if (single !== undefined) return [single, single, single, single];
+  if (Array.isArray(pad)) {
+    if (pad.length === 2) {
+      const p0 = coerceFiniteNumber(pad[0]) ?? defaultPad[0];
+      const p1 = coerceFiniteNumber(pad[1]) ?? defaultPad[1];
+      return [p0, p1, p0, p1];
+    }
+    if (pad.length >= 4) {
+      return [
+        coerceFiniteNumber(pad[0]) ?? defaultPad[0],
+        coerceFiniteNumber(pad[1]) ?? defaultPad[1],
+        coerceFiniteNumber(pad[2]) ?? defaultPad[2],
+        coerceFiniteNumber(pad[3]) ?? defaultPad[3],
+      ];
+    }
+  }
+  return defaultPad;
+}
+
+function parseCalloutTarget(rawTarget: string): {
+  targetId: string;
+  side?: "top" | "bottom" | "left" | "right";
+} {
+  const [rawId, rawAnchor] = rawTarget.split("@");
+  const targetId = rawId.trim();
+  if (!rawAnchor) return { targetId };
+  const sideToken = rawAnchor.split(":")[0].trim().toLowerCase();
+  if (VALID_CALLOUT_SIDES.has(sideToken)) {
+    return {
+      targetId,
+      side: sideToken as "top" | "bottom" | "left" | "right",
+    };
+  }
+  return { targetId };
 }
 
 const CODE_KEYWORDS = new Set([
@@ -166,6 +206,7 @@ function tokenizeCodeLine(
 
 export class HybridLayoutSolver {
   private idCounter = 0;
+  private usedIds = new Set<string>();
   private measurer: TextMeasurer;
   private theme: ResolvedThemeTokens;
   private connections: ConnectionSpec[] = [];
@@ -178,8 +219,21 @@ export class HybridLayoutSolver {
     this.theme = theme;
   }
 
+  private collectExplicitIds(elements: ElementSpec[]): void {
+    for (const el of elements) {
+      if (typeof el.id === "string" && el.id.trim()) {
+        this.usedIds.add(el.id.trim());
+      }
+      if ("children" in el && Array.isArray(el.children)) {
+        this.collectExplicitIds(el.children);
+      }
+    }
+  }
+
   solve(spec: IllustrationSpec, options: LayoutOptions = {}): LayoutResult {
     this.idCounter = 0;
+    this.usedIds.clear();
+    this.collectExplicitIds(spec.elements || []);
     this.connections = spec.connections || [];
     const compact = options.compactViewport ?? false;
     const anchorRegistry: Record<string, BoundingBox> = {};
@@ -226,17 +280,25 @@ export class HybridLayoutSolver {
     const calloutNodes: SceneNode[] = [];
     for (const cSpec of calloutSpecs) {
       const cNode = this.measureElement(cSpec, compact);
-      const targetBox = anchorRegistry[cSpec.target!];
+      const parsedTarget = parseCalloutTarget(cSpec.target!);
+      const targetBox = anchorRegistry[parsedTarget.targetId];
       const ownerBox =
         targetBox?.ownerNodeId && anchorRegistry[targetBox.ownerNodeId]
           ? anchorRegistry[targetBox.ownerNodeId]
           : targetBox;
+      const explicitSide =
+        cSpec.side && VALID_CALLOUT_SIDES.has(cSpec.side)
+          ? cSpec.side
+          : parsedTarget.side;
       const side = compact
-        ? cSpec.side === "left" || cSpec.side === "right"
+        ? explicitSide === "left" || explicitSide === "right"
           ? "top"
-          : cSpec.side || "top"
-        : cSpec.side || "top";
+          : explicitSide || "top"
+        : explicitSide || "top";
 
+      if (cNode.calloutTail) {
+        cNode.calloutTail.side = side;
+      }
       if (targetBox && ownerBox) {
         const gap = 18;
         const isInteriorSubAnchor =
@@ -305,13 +367,15 @@ export class HybridLayoutSolver {
       maxY = Math.max(maxY, node.y + node.height);
     }
 
+    const canvasWidth = coerceFiniteNumber(spec.canvas?.width);
+    const canvasHeight = coerceFiniteNumber(spec.canvas?.height);
     const totalWidth =
-      typeof spec.canvas?.width === "number"
-        ? spec.canvas.width
+      canvasWidth !== undefined && canvasWidth > 0
+        ? canvasWidth
         : Math.max(320, Math.ceil(maxX + canvasPad[1]));
     const totalHeight =
-      typeof spec.canvas?.height === "number"
-        ? spec.canvas.height
+      canvasHeight !== undefined && canvasHeight > 0
+        ? canvasHeight
         : Math.max(180, Math.ceil(maxY + canvasPad[2]));
 
     return {
@@ -395,8 +459,13 @@ export class HybridLayoutSolver {
   }
 
   private nextId(prefix: string): string {
-    this.idCounter += 1;
-    return `${prefix}_${this.idCounter}`;
+    let candidate: string;
+    do {
+      this.idCounter += 1;
+      candidate = `__auto_${prefix}_${this.idCounter}`;
+    } while (this.usedIds.has(candidate));
+    this.usedIds.add(candidate);
+    return candidate;
   }
 
   private measureElement(spec: ElementSpec, compact: boolean): SceneNode {
@@ -452,6 +521,11 @@ export class HybridLayoutSolver {
         node = this.buildPrimitiveShapeNode(spec as RectElementSpec);
         break;
     }
+
+    node.x = coerceFiniteNumber(node.x) ?? 0;
+    node.y = coerceFiniteNumber(node.y) ?? 0;
+    node.width = Math.max(1, coerceFiniteNumber(node.width) ?? 80);
+    node.height = Math.max(1, coerceFiniteNumber(node.height) ?? 40);
 
     this.enforceNodeDecorationBounds(node, spec);
     return node;
@@ -634,7 +708,7 @@ export class HybridLayoutSolver {
         stroke:
           style.variant === "filled"
             ? style.textColor
-            : this.theme.colors.tones[style.tone].main,
+            : getTonePalette(this.theme, style.tone).main,
       });
     }
 
@@ -654,7 +728,7 @@ export class HybridLayoutSolver {
     if (spec.badge) {
       const bx = width - pad[1] - badgeWidth;
       const by = cursorY - 1;
-      const tonePalette = this.theme.colors.tones[style.tone];
+      const tonePalette = getTonePalette(this.theme, style.tone);
       decorations.push({
         kind: "rect",
         x: bx,
@@ -757,7 +831,7 @@ export class HybridLayoutSolver {
     style.stroke =
       style.tone === "neutral"
         ? mixColors(this.theme.colors.border, "#1e293b", 0.5)
-        : this.theme.colors.tones[style.tone].softBorder;
+        : getTonePalette(this.theme, style.tone).softBorder;
 
     const fontMono = this.theme.typography.fontMono;
     const rawLines = (spec.code || "").replace(/\s+$/, "").split(/\r?\n/);
@@ -865,7 +939,7 @@ export class HybridLayoutSolver {
     const highlightSet = new Set(spec.highlightLines || []);
     const highlightTone =
       style.tone === "neutral" ? "primary" : style.tone;
-    const highlightColor = this.theme.colors.tones[highlightTone].main;
+    const highlightColor = getTonePalette(this.theme, highlightTone).main;
 
     rawLines.forEach((lineText, idx) => {
       const lineNum = idx + 1;
@@ -1049,7 +1123,9 @@ export class HybridLayoutSolver {
       const y = lineY + 14;
       const anchorId = `${id}.line_${lineNum}`;
       const itemTone =
-        typeof item === "object" && item.tone ? item.tone : undefined;
+        typeof item === "object" && item.tone !== undefined
+          ? normalizeTone(item.tone, "neutral")
+          : undefined;
 
       subAnchors.push({
         anchorId,
@@ -1105,7 +1181,7 @@ export class HybridLayoutSolver {
           });
         } else if (item.output) {
           const outColor = item.tone
-            ? this.theme.colors.tones[item.tone].main
+            ? getTonePalette(this.theme, item.tone).main
             : "#94a3b8";
           decorations.push({
             kind: "text",
@@ -1197,7 +1273,7 @@ export class HybridLayoutSolver {
 
     const decorations: PrimitiveDecoration[] = [];
     const subAnchors: SubAnchorRenderItem[] = [];
-    const tonePalette = this.theme.colors.tones[style.tone];
+    const tonePalette = getTonePalette(this.theme, style.tone);
 
     let cursorY = 0;
 
@@ -1279,7 +1355,12 @@ export class HybridLayoutSolver {
         const cell = row[cIdx] ?? "";
         const cellText = getCellText(cell);
         const cellTone: SemanticTone | undefined =
-          typeof cell === "object" ? cell.tone : undefined;
+          typeof cell === "object" && cell.tone !== undefined
+            ? normalizeTone(cell.tone, "neutral")
+            : undefined;
+        const cellPalette = cellTone
+          ? getTonePalette(this.theme, cellTone)
+          : undefined;
         const anchorId = `${id}.cell_${rIdx}_${cIdx}`;
 
         subAnchors.push({
@@ -1300,9 +1381,7 @@ export class HybridLayoutSolver {
           width: cw,
           height: rowHeight,
           rx: 0,
-          fill: cellTone
-            ? this.theme.colors.tones[cellTone].softBg
-            : "transparent",
+          fill: cellPalette ? cellPalette.softBg : "transparent",
         });
 
         if (cIdx > 0) {
@@ -1325,9 +1404,7 @@ export class HybridLayoutSolver {
           fontFamily: fontMono,
           fontSize: 12,
           fontWeight: cellTone ? 600 : 400,
-          textColor: cellTone
-            ? this.theme.colors.tones[cellTone].main
-            : style.textColor,
+          textColor: cellPalette ? cellPalette.main : style.textColor,
         });
 
         colX += cw;
@@ -1438,7 +1515,7 @@ export class HybridLayoutSolver {
     }
 
     const decorations: PrimitiveDecoration[] = [];
-    const tonePalette = this.theme.colors.tones[style.tone];
+    const tonePalette = getTonePalette(this.theme, style.tone);
 
     if (spec.type === "window") {
       decorations.push({
@@ -1573,19 +1650,27 @@ export class HybridLayoutSolver {
       });
     });
 
+    const parsedCalloutTarget = spec.target
+      ? parseCalloutTarget(spec.target)
+      : undefined;
+    const calloutSide =
+      spec.side && VALID_CALLOUT_SIDES.has(spec.side)
+        ? spec.side
+        : parsedCalloutTarget?.side || "top";
+
     return {
       id,
       type: "callout",
-      x: spec.x ?? 0,
-      y: spec.y ?? 0,
+      x: coerceFiniteNumber(spec.x) ?? 0,
+      y: coerceFiniteNumber(spec.y) ?? 0,
       width,
       height,
       style,
       shape: "rect",
-      calloutTail: spec.target
+      calloutTail: parsedCalloutTarget
         ? {
-            targetId: spec.target,
-            side: spec.side || "top",
+            targetId: parsedCalloutTarget.targetId,
+            side: calloutSide,
           }
         : undefined,
       decorations,
@@ -1676,9 +1761,10 @@ export class HybridLayoutSolver {
         ? spec.height
         : Math.ceil(block.height + 4);
 
+    const textTone = normalizeTone(spec.style?.tone, "neutral");
     const textColor =
-      spec.style?.tone && spec.style.tone !== "neutral"
-        ? this.theme.colors.tones[spec.style.tone].main
+      spec.style?.tone && textTone !== "neutral"
+        ? getTonePalette(this.theme, textTone).main
         : this.theme.colors.text;
 
     const decorations: PrimitiveDecoration[] = block.lines.map((line, i) => ({
@@ -1745,7 +1831,7 @@ export class HybridLayoutSolver {
         stroke:
           style.variant === "filled"
             ? style.textColor
-            : this.theme.colors.tones[style.tone].main,
+            : getTonePalette(this.theme, style.tone).main,
       },
     ];
 
@@ -1781,12 +1867,30 @@ export class HybridLayoutSolver {
   private buildPolygonNode(spec: PolygonElementSpec): SceneNode {
     const id = spec.id || this.nextId("poly");
     const style = resolveNodeStyle(spec.style, this.theme, "soft", "primary");
-    const width = typeof spec.width === "number" ? spec.width : 110;
-    const height = typeof spec.height === "number" ? spec.height : 100;
+    const specW = coerceFiniteNumber(spec.width);
+    const specH = coerceFiniteNumber(spec.height);
+    const width = specW !== undefined && specW > 0 ? specW : 110;
+    const height = specH !== undefined && specH > 0 ? specH : 100;
 
-    let points = spec.points;
+    let points: [number, number][] | undefined = Array.isArray(spec.points)
+      ? spec.points
+          .filter(
+            (p): p is [number, number] =>
+              Array.isArray(p) &&
+              p.length >= 2 &&
+              coerceFiniteNumber(p[0]) !== undefined &&
+              coerceFiniteNumber(p[1]) !== undefined
+          )
+          .map(
+            (p) =>
+              [
+                coerceFiniteNumber(p[0])!,
+                coerceFiniteNumber(p[1])!,
+              ] as [number, number]
+          )
+      : undefined;
     if (!points || points.length === 0) {
-      const sides = Math.max(3, spec.sides || 6);
+      const sides = Math.max(3, Math.round(coerceFiniteNumber(spec.sides) ?? 6));
       const startAngle = sides === 6 ? 0 : -Math.PI / 2;
       const rawPts: [number, number][] = [];
       let minPx = Infinity;
@@ -1853,20 +1957,23 @@ export class HybridLayoutSolver {
     );
     if (!spec.closed) {
       style.fill = "none";
-      style.stroke = this.theme.colors.tones[style.tone].main;
+      style.stroke = getTonePalette(this.theme, style.tone).main;
       style.strokeWidth = 2;
     }
+
+    const specW = coerceFiniteNumber(spec.width);
+    const specH = coerceFiniteNumber(spec.height);
 
     return {
       id,
       type: "path",
-      x: spec.x ?? 0,
-      y: spec.y ?? 0,
-      width: typeof spec.width === "number" ? spec.width : 120,
-      height: typeof spec.height === "number" ? spec.height : 80,
+      x: coerceFiniteNumber(spec.x) ?? 0,
+      y: coerceFiniteNumber(spec.y) ?? 0,
+      width: specW !== undefined && specW > 0 ? specW : 120,
+      height: specH !== undefined && specH > 0 ? specH : 80,
       style,
       shape: "path",
-      pathD: spec.d,
+      pathD: sanitizeSvgPathD(spec.d),
       decorations: [],
       subAnchors: [],
       children: [],
@@ -1951,7 +2058,7 @@ export class HybridLayoutSolver {
 
     const decorations: PrimitiveDecoration[] = [];
     const subAnchors: SubAnchorRenderItem[] = [];
-    const tonePalette = this.theme.colors.tones[style.tone];
+    const tonePalette = getTonePalette(this.theme, style.tone);
 
     let cursorY = 0;
 
@@ -2030,8 +2137,8 @@ export class HybridLayoutSolver {
           ? Math.max(fieldWidths[idx], width - colX)
           : fieldWidths[idx];
       const bitSpan = bitCounts[idx];
-      const fTone = f.tone || style.tone;
-      const fPalette = this.theme.colors.tones[fTone];
+      const fTone = normalizeTone(f.tone, style.tone);
+      const fPalette = getTonePalette(this.theme, fTone);
       const anchorId = `${id}.field_${idx}`;
 
       subAnchors.push({
@@ -2297,8 +2404,8 @@ export class HybridLayoutSolver {
       const aw = actorWidths[idx];
       const ax = cx - aw / 2;
       const ay = titleBarHeight + padTop;
-      const aTone = actor.tone || "primary";
-      const aPalette = this.theme.colors.tones[aTone];
+      const aTone = normalizeTone(actor.tone, "primary");
+      const aPalette = getTonePalette(this.theme, aTone);
       const actorAnchorId = `${id}.${actor.id}`;
 
       subAnchors.push({
@@ -2369,11 +2476,14 @@ export class HybridLayoutSolver {
       const x1 = actorCentersX[fromIdx] ?? padX;
       const x2 = actorCentersX[toIdx] ?? padX;
       const msgY = timelineStartY + 26 + mIdx * msgRowH;
-      const mTone = msg.tone || (msg.type === "reply" ? "neutral" : "primary");
+      const mTone = normalizeTone(
+        msg.tone,
+        msg.type === "reply" ? "neutral" : "primary"
+      );
       const mColor =
         mTone === "neutral"
           ? this.theme.colors.textMuted
-          : this.theme.colors.tones[mTone].main;
+          : getTonePalette(this.theme, mTone).main;
       const msgAnchorId = `${id}.msg_${mIdx + 1}`;
 
       subAnchors.push({

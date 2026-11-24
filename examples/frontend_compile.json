@@ -1,0 +1,281 @@
+{
+  "title": "React 18 Fiber 并发时间切片与 Vue 3 编译期 PatchFlags 靶向更新",
+  "canvas": {
+    "background": "dots",
+    "padding": 36
+  },
+  "elements": [
+    {
+      "id": "vue_sfc",
+      "type": "code-block",
+      "title": "App.vue → compile() 编译产物",
+      "lang": "ts",
+      "highlightLines": [
+        2,
+        4,
+        5
+      ],
+      "code": "const _hoisted_1 = createVNode(\"h1\", null, \"Static\");\nexport function render(_ctx) {\n  return (openBlock(), createElementBlock(\"div\", null, [\n    _hoisted_1,\n    createElementVNode(\"span\", null, _ctx.msg, 1 /* TEXT */)\n  ]));\n}",
+      "style": {
+        "tone": "success",
+        "elevation": "sm"
+      }
+    },
+    {
+      "id": "note_patch",
+      "type": "callout",
+      "text": "编译期静态分析注入 1 /* TEXT */ 位标记，Diff 时直接跳过静态子树！",
+      "target": "vue_sfc.line_5",
+      "side": "top",
+      "style": {
+        "tone": "warning"
+      }
+    },
+    {
+      "id": "patch_flags",
+      "type": "bitfield",
+      "title": "Vue 3 PatchFlags 32-bit 靶向位掩码",
+      "totalBits": 32,
+      "place": {
+        "below": "vue_sfc",
+        "gap": 44,
+        "align": "start"
+      },
+      "fields": [
+        {
+          "name": "TEXT",
+          "bits": 4,
+          "value": "0x01",
+          "tone": "success"
+        },
+        {
+          "name": "CLASS",
+          "bits": 4,
+          "value": "0x02",
+          "tone": "info"
+        },
+        {
+          "name": "STYLE",
+          "bits": 4,
+          "value": "0x04",
+          "tone": "primary"
+        },
+        {
+          "name": "PROPS",
+          "bits": 8,
+          "value": "0x08",
+          "tone": "warning"
+        },
+        {
+          "name": "HOISTED",
+          "bits": 12,
+          "value": "-1 静态",
+          "tone": "neutral"
+        }
+      ]
+    },
+    {
+      "id": "vue_runtime",
+      "type": "group",
+      "title": "Vue 3 运行时 Block Tree 靶向 Patch",
+      "place": {
+        "rightOf": "vue_sfc",
+        "gap": 68,
+        "align": "start"
+      },
+      "layout": {
+        "type": "flex",
+        "direction": "column",
+        "gap": 16
+      },
+      "style": {
+        "tone": "success",
+        "variant": "dashed"
+      },
+      "children": [
+        {
+          "id": "static_hoist",
+          "type": "card",
+          "icon": "layers",
+          "title": "1. Static Hoisting 静态提升",
+          "badge": "0 Diff",
+          "body": "_hoisted_1 在模块初始化时仅创建一次，重渲染直接复用引用",
+          "style": {
+            "tone": "neutral",
+            "variant": "soft"
+          }
+        },
+        {
+          "id": "block_patch",
+          "type": "card",
+          "icon": "zap",
+          "title": "2. dynamicChildren 扁平靶向遍历",
+          "badge": "O(动态节点)",
+          "body": "绕过 VNode 树层级递归，仅对 dynamicChildren 数组执行位与更新",
+          "style": {
+            "tone": "success",
+            "variant": "soft"
+          }
+        }
+      ]
+    },
+    {
+      "id": "react_fiber",
+      "type": "group",
+      "title": "React 18 Fiber 并发时间切片管线 (WorkLoop)",
+      "place": {
+        "below": "patch_flags",
+        "gap": 48,
+        "align": "start"
+      },
+      "layout": {
+        "type": "flex",
+        "direction": "row",
+        "gap": 24
+      },
+      "style": {
+        "tone": "primary",
+        "variant": "outlined"
+      },
+      "children": [
+        {
+          "id": "lane_queue",
+          "type": "queue",
+          "label": "Scheduler Lane 队列",
+          "sublabel": "MessageChannel 5ms 宏任务切片",
+          "style": {
+            "tone": "info",
+            "variant": "soft"
+          }
+        },
+        {
+          "id": "render_phase",
+          "type": "card",
+          "icon": "cpu",
+          "title": "Render Phase (可中断异步)",
+          "badge": "workInProgress",
+          "body": "beginWork 向下递推 → completeWork 向上归并构建双缓冲 Fiber 树",
+          "style": {
+            "tone": "primary",
+            "variant": "soft"
+          }
+        },
+        {
+          "id": "commit_phase",
+          "type": "card",
+          "icon": "check",
+          "title": "Commit Phase (同步原子上屏)",
+          "badge": "SubtreeFlags",
+          "body": "beforeMutation → mutation(DOM 变更) → layout(切换 current 指针)",
+          "style": {
+            "tone": "accent",
+            "variant": "soft"
+          }
+        }
+      ]
+    },
+    {
+      "id": "compare_matrix",
+      "type": "table",
+      "title": "React Fiber vs Vue 3 编译优化核心复杂度对比",
+      "place": {
+        "rightOf": "vue_runtime",
+        "gap": 64,
+        "align": "start"
+      },
+      "headers": [
+        "对比维度",
+        "React 18 Concurrent",
+        "Vue 3 Block Tree"
+      ],
+      "rows": [
+        [
+          "核心策略",
+          {
+            "text": "运行时时间切片 (Time Slicing)",
+            "tone": "primary"
+          },
+          {
+            "text": "编译期静态分析 (AOT Hints)",
+            "tone": "success"
+          }
+        ],
+        [
+          "Diff 粒度",
+          "组件级 Fiber 树 + SubtreeFlags",
+          {
+            "text": "dynamicChildren 靶向直达",
+            "tone": "success"
+          }
+        ],
+        [
+          "中断能力",
+          {
+            "text": "shouldYield() 5ms 随时让出主线程",
+            "tone": "info"
+          },
+          "同步极速完成 (单次更新耗时极短)"
+        ]
+      ],
+      "style": {
+        "tone": "primary",
+        "variant": "outlined"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "from": "vue_sfc.line_1@right",
+      "to": "static_hoist@left",
+      "label": "常量 VNode 提升",
+      "tone": "neutral",
+      "strokeStyle": "dashed"
+    },
+    {
+      "from": "vue_sfc.line_5@right",
+      "to": "block_patch@left",
+      "label": "收集至 dynamicChildren",
+      "tone": "success",
+      "animation": {
+        "type": "pulse",
+        "speed": "fast"
+      }
+    },
+    {
+      "from": "patch_flags.field_1@right",
+      "to": "block_patch@bottom",
+      "label": "flag & TEXT 位判断",
+      "tone": "success"
+    },
+    {
+      "from": "lane_queue@right",
+      "to": "render_phase@left",
+      "label": "消费高优 Lane",
+      "tone": "info",
+      "animation": {
+        "type": "flow"
+      }
+    },
+    {
+      "from": "render_phase@right",
+      "to": "commit_phase@left",
+      "label": "finishedWork 就绪",
+      "tone": "primary",
+      "animation": {
+        "type": "pulse"
+      }
+    },
+    {
+      "from": "block_patch@right",
+      "to": "compare_matrix.cell_1_2@left",
+      "label": "跳过静态子树",
+      "tone": "success"
+    },
+    {
+      "from": "commit_phase@top",
+      "to": "compare_matrix.cell_2_1@bottom",
+      "label": "双缓冲指针切换",
+      "tone": "primary"
+    }
+  ]
+}

@@ -1,0 +1,106 @@
+{
+  "title": "Linux sendfile 零拷贝内存与 DMA 传输图解",
+  "canvas": {
+    "background": "grid",
+    "padding": 32
+  },
+  "elements": [
+    {
+      "id": "cli_term",
+      "type": "terminal",
+      "title": "user-space-shell",
+      "lines": [
+        {
+          "prompt": "$",
+          "cmd": "strace -e sendfile ./http-server"
+        },
+        {
+          "output": "sendfile(fd_out=4, fd_in=3, NULL, 65536) = 65536",
+          "tone": "success"
+        },
+        {
+          "output": "0 CPU copy between user & kernel buffers!",
+          "tone": "accent"
+        }
+      ]
+    },
+    {
+      "id": "kernel_buf",
+      "type": "table",
+      "title": "Kernel Page Cache (环形描述符)",
+      "place": {
+        "rightOf": "cli_term",
+        "gap": 52,
+        "align": "center"
+      },
+      "headers": [
+        "Offset",
+        "Page Frame",
+        "DMA Flag"
+      ],
+      "rows": [
+        [
+          "0x0000",
+          {
+            "text": "skb_frag_t[0]",
+            "tone": "primary"
+          },
+          "DMA_MAPPED"
+        ],
+        [
+          "0x4000",
+          {
+            "text": "skb_frag_t[1]",
+            "tone": "accent"
+          },
+          "ZERO_COPY"
+        ]
+      ],
+      "style": {
+        "tone": "primary",
+        "variant": "outlined"
+      }
+    },
+    {
+      "id": "nic_card",
+      "type": "card",
+      "icon": "server",
+      "title": "NIC TX Ring Buffer",
+      "badge": "Hardware DMA",
+      "body": "网卡 DMA 引擎直接按物理页描述符读取发送",
+      "place": {
+        "below": "kernel_buf",
+        "gap": 36,
+        "align": "center"
+      },
+      "style": {
+        "tone": "accent",
+        "variant": "soft",
+        "elevation": "md"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "from": "cli_term.line_2@right",
+      "to": "kernel_buf.cell_0_1@left",
+      "label": "系统调用陷入内核",
+      "routing": "curved",
+      "tone": "primary",
+      "animation": {
+        "type": "pulse"
+      }
+    },
+    {
+      "from": "kernel_buf.cell_1_1@bottom",
+      "to": "nic_card@top",
+      "label": "SG-DMA 散列聚合直传",
+      "routing": "orthogonal",
+      "tone": "accent",
+      "animation": {
+        "type": "bidirectional",
+        "speed": "fast"
+      }
+    }
+  ]
+}

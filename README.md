@@ -74,7 +74,8 @@ export default {
       {
         defaultPreset: "clean", // "clean" | "sketch" | "blueprint"
         responsive: "reflow",   // "reflow" | "scale"
-        prerenderSvg: true      // 构建期预渲染静态 SVG 兜底
+        prerenderSvg: true,     // 构建期预渲染静态 SVG 兜底（CSS 变量自适应明暗主题）
+        mode: "auto"            // "auto" | "html" | "mdx"（MDX v2+ 输出 mdxJsxFlowElement）
       }
     ]
   ]
@@ -91,7 +92,7 @@ export default {
 
 `<ai-illustration>` 支持的 HTML 属性：
 - `preset`：渲染风格预设，可选 `clean`、`sketch`（手绘风格）、`blueprint`（蓝图风格）
-- `responsive`：视口适配模式，可选 `reflow`（窄屏自动重排）或 `scale`（等比缩放）
+- `responsive`：视口适配模式，可选 `reflow`（窄屏自动纵排重排；注意：纵排重排时为避免连线绕行失真，会有意忽略水平布局下的显式端口方向如 `@right`/`@left` 并自动重选端口）或 `scale`（等比缩放）
 - `toolbar`：控制悬浮工具栏显示
 - `spec`：直接传入序列化后的 `IllustrationSpec` 字符串（也可通过内部 `<script type="application/json">` 传入）
 
@@ -130,24 +131,32 @@ millus/
 │   ├── integrations/
 │   │   └── remark-plugin.ts     # Remark / MDX 构建期插件
 │   └── index.ts                 # 主入口
+├── examples/
+│   └── *.json                   # 9 个交互式示例 Spec（Playground 与测试共用）
 ├── playground/
 │   └── index.html               # 交互式 Playground
 ├── scripts/
-│   └── build-bundle.ts          # 零依赖 ESM/浏览器单文件打包脚本
+│   └── build-bundle.ts          # 多入口 ESM / .d.ts / 浏览器 bundle 构建脚本（esbuild + tsc）
 └── test/
-    └── compiler.test.ts         # 编译器与集成测试
+    └── compiler.test.ts         # 基于 node:test 的编译器、安全、性能与集成测试套件
 ```
 
 ## 开发与构建
 
-需要 Node.js 22+（使用原生 `--experimental-strip-types` 直接运行 TypeScript）：
+需要 Node.js 22+（运行时零依赖，构建与类型检查使用 `esbuild` 和 `typescript` 开发依赖）：
 
 ```bash
+# 安装开发依赖
+npm install
+
+# 运行类型检查
+npm run typecheck
+
+# 构建多入口 ESM、.d.ts 与独立浏览器 bundle (dist/)
+npm run build
+
 # 运行完整测试套件
 npm test
-
-# 构建单文件浏览器/ESM 产物 (dist/millus.bundle.js)
-npm run build
 ```
 
 ## License

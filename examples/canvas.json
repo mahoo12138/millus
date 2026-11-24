@@ -1,0 +1,129 @@
+{
+  "title": "自由几何图形与分布式鉴权网关",
+  "canvas": {
+    "background": "dots",
+    "padding": 36
+  },
+  "elements": [
+    {
+      "id": "client_node",
+      "type": "circle",
+      "label": "Client",
+      "sublabel": "HTTPS",
+      "style": {
+        "tone": "info",
+        "variant": "soft",
+        "elevation": "sm"
+      }
+    },
+    {
+      "id": "waf_check",
+      "type": "diamond",
+      "label": "JWT 校验",
+      "place": {
+        "rightOf": "client_node",
+        "gap": 48,
+        "align": "center"
+      },
+      "style": {
+        "tone": "warning",
+        "variant": "soft"
+      }
+    },
+    {
+      "id": "mesh_cluster",
+      "type": "window",
+      "title": "Service Mesh Pod",
+      "url": "mesh://internal.prod:8443",
+      "place": {
+        "rightOf": "waf_check",
+        "gap": 56,
+        "align": "center"
+      },
+      "layout": {
+        "type": "flex",
+        "direction": "row",
+        "gap": 18
+      },
+      "style": {
+        "tone": "primary",
+        "variant": "outlined"
+      },
+      "children": [
+        {
+          "id": "envoy_proxy",
+          "type": "polygon",
+          "sides": 6,
+          "label": "Envoy",
+          "style": {
+            "tone": "secondary",
+            "variant": "soft"
+          }
+        },
+        {
+          "id": "core_api",
+          "type": "card",
+          "icon": "zap",
+          "title": "Order Core",
+          "badge": "gRPC",
+          "body": "高并发撮合服务",
+          "style": {
+            "tone": "success",
+            "variant": "soft"
+          }
+        }
+      ]
+    },
+    {
+      "id": "reject_badge",
+      "type": "badge",
+      "text": "401 Unauthorized",
+      "place": {
+        "below": "waf_check",
+        "gap": 36,
+        "align": "center"
+      },
+      "style": {
+        "tone": "danger",
+        "variant": "filled"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "from": "client_node@right",
+      "to": "waf_check@left",
+      "label": "Bearer Token",
+      "tone": "info",
+      "animation": {
+        "type": "pulse"
+      }
+    },
+    {
+      "from": "waf_check@right",
+      "to": "envoy_proxy@left",
+      "label": "通过",
+      "tone": "success",
+      "animation": {
+        "type": "pulse",
+        "speed": "fast"
+      }
+    },
+    {
+      "from": "envoy_proxy@right",
+      "to": "core_api@left",
+      "routing": "straight",
+      "tone": "secondary",
+      "animation": {
+        "type": "flow"
+      }
+    },
+    {
+      "from": "waf_check@bottom",
+      "to": "reject_badge@top",
+      "label": "签名失效",
+      "strokeStyle": "dashed",
+      "tone": "danger"
+    }
+  ]
+}
